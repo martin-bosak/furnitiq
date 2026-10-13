@@ -29,6 +29,10 @@ npm run dev
 
 `src/lib/scene/schema.ts` (zod) defines the single source of truth. It contains walls (segments with thickness and height), openings (door or window on a wall at an offset), rooms (polygons with a floor material), furniture (catalog type, footprint center, rotation, size), cameras (eye position and target) and a render style prompt. Units are meters. Plan y points down (south). Rotation is in degrees clockwise, and rotation 0 means the item's front faces +y.
 
+**Rooms come from walls** (`src/lib/scene/rooms.ts`). Every closed loop of walls is detected as a room, including walls ending against another wall (T-junctions), crossings and joints a few cm off. Floors and ceilings are generated from those loops, so moving a wall reshapes the rooms on both sides. Room records only hold metadata (name, floor, ceiling) anchored at a point `at` inside the room. Records with `zone: true` are explicit floor areas (e.g. kitchen tiles inside an open-plan room). v1 scenes with stored room polygons are migrated on load.
+
+Plan tools: **Select (V)**, **Wall (W)**: click corners with snapping to wall ends, points on walls, 45° and a 5 cm grid (Alt for 1 cm, Shift for no angle snap); click the first point, double-click or Enter to finish. **Room (B)**: drag a rectangle to get 4 walls and a room, reusing walls already there. **Floor zone (F)**: drag a rectangle. Orange rings mark wall ends that don't connect.
+
 All edits go through **`SceneOp`s** (`src/lib/scene/ops.ts`). The UI, the chat agent's tool calls and external agents all use the same operations.
 
 ### AI flows

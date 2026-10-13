@@ -26,6 +26,7 @@ export type ChatContext = {
 export type AgentResult = { reply: string; ops: SceneOp[] };
 
 const vec2 = { type: "array", items: { type: "number" }, minItems: 2, maxItems: 2 } as const;
+const FLOORS = ["oak", "walnut", "tile", "concrete", "carpet"];
 const size3 = { type: "array", items: { type: "number" }, minItems: 3, maxItems: 3 } as const;
 
 const fn = (name: string, description: string, properties: Record<string, unknown>, required: string[] = []): ChatCompletionTool => ({
@@ -108,6 +109,35 @@ export const TOOLS: ChatCompletionTool[] = [
       activate: { type: "boolean" },
     },
   ),
+  fn(
+    "add_room",
+    "Create a room: walls around a rectangle (corners a and b) or a polygon, plus its name/floor. Walls that already exist along an edge are reused, so rooms can share walls.",
+    {
+      a: { ...vec2, description: "Corner [x, y]" },
+      b: { ...vec2, description: "Opposite corner [x, y]" },
+      polygon: { type: "array", items: vec2, description: "Instead of a/b: corner points in order" },
+      name: { type: "string" },
+      floor: { type: "string", enum: FLOORS },
+      height: { type: "number" },
+    },
+  ),
+  fn(
+    "set_room",
+    "Name a room, change its floor material or hide its ceiling. Identify it by `id` (from the scene's rooms) or any point `at` inside it.",
+    { id: { type: "string" }, at: vec2, name: { type: "string" }, floor: { type: "string", enum: FLOORS }, ceiling: { type: "boolean" } },
+  ),
+  fn(
+    "add_zone",
+    "Add a floor zone: a different floor material over part of a room (e.g. tiles in the kitchen part of an open-plan room).",
+    { polygon: { type: "array", items: vec2 }, floor: { type: "string", enum: FLOORS }, name: { type: "string" } },
+    ["polygon", "floor"],
+  ),
+  fn(
+    "update_zone",
+    "Change a floor zone's outline, floor or name.",
+    { id: { type: "string" }, polygon: { type: "array", items: vec2 }, floor: { type: "string", enum: FLOORS }, name: { type: "string" } },
+    ["id"],
+  ),
   fn("set_style", "Set the interior style prompt used for photorealistic renders.", { prompt: { type: "string" } }, ["prompt"]),
 ];
 
@@ -136,6 +166,16 @@ export function toolCallToOp(name: string, args: Record<string, any>): SceneOp {
     }
     case "set_camera":
       return { op: "set_camera", ...args };
+    case "add_room":
+      return { op: "add_room", ...(args as any) };
+    case "set_room":
+      return { op: "set_room", ...(args as any) };
+    case "add_zone":
+      return { op: "add_zone", ...(args as any) };
+    case "update_zone": {
+      const { id, ...patch } = args;
+      return { op: "update_zone", id, patch };
+    }
     case "set_style":
       return { op: "set_style", prompt: args.prompt };
     default:
@@ -152,6 +192,8 @@ export function systemPrompt(ctx: Omit<ChatContext, "message" | "history">) {
   return `You are Furnitiq, an expert interior designer that edits a 2D/3D apartment model through tools.
 
 Coordinate system: meters. Plan x → right (east), y → down (south). Rotation in degrees clockwise seen from above; at rotation 0 an item's front faces +y (south), 90 → west, 180 → north, 270 → east. Furniture position is the footprint center; size is [width, depth, height]. Keep items inside rooms, not overlapping walls (walls are centered on their line, ~0.12 m thick), and leave ≥0.8 m walkways. Put backs of sofas, beds, wardrobes against walls when sensible.
+
+Rooms: floors and ceilings are generated automatically from walls — every closed loop of walls is a room, and moving a wall reshapes its room. To create a room use add_room (or add walls that form a closed loop); never try to draw floors separately. Walls must meet end-to-end or end-on-wall to close a loop. Use set_room to name a room or change its floor, and add_zone for a different floor in part of a room. The scene lists closed rooms with their polygons; "openEnds" are wall ends that don't connect (rooms there are not closed yet).
 
 Catalog types: ${catalog}.
 

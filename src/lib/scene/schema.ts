@@ -10,6 +10,7 @@
  * `version` and add a migration in `parseScene` for breaking changes.
  */
 import { z } from "zod";
+import { migrateRooms } from "./rooms";
 
 export const Vec2 = z.tuple([z.number(), z.number()]);
 export type Vec2 = z.infer<typeof Vec2>;
@@ -37,11 +38,20 @@ export const Opening = z.object({
 });
 export type Opening = z.infer<typeof Opening>;
 
+/**
+ * Room metadata. Room *shapes* come from the walls: every closed loop of walls
+ * is a room (see rooms.ts). A label is attached to the loop containing `at`.
+ * With `zone: true` the record is instead an explicit floor area (`polygon`)
+ * drawn on top, e.g. tiles in the kitchen part of an open-plan room.
+ */
 export const Room = z.object({
   id: z.string(),
   name: z.string(),
-  polygon: z.array(Vec2).min(3),
   floor: z.enum(["oak", "walnut", "tile", "concrete", "carpet"]).default("oak"),
+  at: Vec2.optional(),
+  polygon: z.array(Vec2).min(3).optional(),
+  zone: z.boolean().optional(),
+  ceiling: z.boolean().optional(),
 });
 export type Room = z.infer<typeof Room>;
 
@@ -76,7 +86,7 @@ export type Camera = z.infer<typeof Camera>;
 
 export const Scene = z.object({
   schema: z.literal("furnitiq.scene").default("furnitiq.scene"),
-  version: z.literal(1).default(1),
+  version: z.union([z.literal(1), z.literal(2)]).default(2),
   name: z.string().default("Untitled apartment"),
   units: z.literal("m").default("m"),
   walls: z.array(Wall).default([]),
@@ -95,8 +105,10 @@ export const Scene = z.object({
 export type Scene = z.infer<typeof Scene>;
 
 export function parseScene(input: unknown): Scene {
-  return Scene.parse(input);
+  const scene = Scene.parse(input);
+  // v1 stored room polygons; v2 derives them from walls.
+  return { ...scene, version: 2, rooms: migrateRooms(scene.walls, scene.rooms) };
 }
 
-export type SceneObjectKind = "wall" | "opening" | "furniture" | "camera" | "room";
+export type SceneObjectKind = "wall" | "opening" | "furniture" | "camera" | "room" | "zone";
 export type Selection = { kind: SceneObjectKind; id: string } | null;

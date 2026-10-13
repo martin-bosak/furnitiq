@@ -5,7 +5,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { sampleScene } from "@/lib/scene/sample";
 import { parseScene, type Scene } from "@/lib/scene/schema";
-import { useEditor, type Render } from "@/store/editor";
+import { useEditor, type Render, type Tool } from "@/store/editor";
 import { CameraPanel } from "./CameraPanel";
 import { ChatPanel } from "./ChatPanel";
 import { Inspector } from "./Inspector";
@@ -325,6 +325,8 @@ function useAutosave(setNotice: (n: string | null) => void) {
   }, [setNotice]);
 }
 
+const TOOL_KEYS: Record<string, Tool> = { v: "select", w: "wall", b: "room", f: "zone" };
+
 function useShortcuts() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -342,8 +344,10 @@ function useShortcuts() {
         st.redo();
       } else if ((e.key === "Delete" || e.key === "Backspace") && sel) {
         e.preventDefault();
-        st.applyOps([{ op: "remove", id: sel.id }]);
+        if (!sel.id.startsWith("face@")) st.applyOps([{ op: "remove", id: sel.id }]);
         st.select(null);
+      } else if (!mod && !t.closest("[tabindex]") && TOOL_KEYS[e.key.toLowerCase()]) {
+        st.setTool(TOOL_KEYS[e.key.toLowerCase()]);
       } else if (e.key === "Escape") {
         st.select(null);
         st.setPin(null);

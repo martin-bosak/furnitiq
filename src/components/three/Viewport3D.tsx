@@ -5,7 +5,8 @@ import { Canvas, useFrame, useThree, type ThreeEvent } from "@react-three/fiber"
 import { useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
 import { sceneBounds, wallAngle, wallLength, pointOnWall } from "@/lib/scene/ops";
-import type { Furniture, Opening, Room, Wall } from "@/lib/scene/schema";
+import { resolveRooms, type ResolvedRoom } from "@/lib/scene/rooms";
+import type { Furniture, Opening, Room, Vec2, Wall } from "@/lib/scene/schema";
 import { activeCamera, useEditor } from "@/store/editor";
 import { viewportApi } from "./api";
 import { FurnitureModel } from "./FurnitureModel";
@@ -46,7 +47,9 @@ function SceneContents() {
   const cx = (b.minX + b.maxX) / 2;
   const cy = (b.minY + b.maxY) / 2;
   const span = Math.max(b.maxX - b.minX, b.maxY - b.minY) + 4;
-  const wallH = scene.walls[0]?.height ?? 2.7;
+  const wallH = scene.walls.length ? Math.max(...scene.walls.map((w) => w.height)) : 2.7;
+  // Floors and ceilings follow the walls: every closed wall loop is a room.
+  const layout = resolveRooms(scene);
 
   return (
     <>
@@ -68,16 +71,18 @@ function SceneContents() {
       >
         <object3D attach="target" position={[cx, 0, cy]} />
       </directionalLight>
-      {scene.rooms.map((r) => {
-        const [x, y] = centroid(r);
-        return <pointLight key={r.id} position={[x, wallH - 0.35, y]} intensity={1.2} distance={7} decay={2} color="#ffe7c7" />;
-      })}
+      {layout.rooms.map((r) => (
+        <pointLight key={r.id} position={[r.labelAt[0], wallH - 0.35, r.labelAt[1]]} intensity={1.2} distance={7} decay={2} color="#ffe7c7" />
+      ))}
 
       {/* Real outdoor light + the view through the windows (CC0 HDRI). The apartment is upstairs, so no ground plane. */}
       <Environment files={HDRI} background />
 
-      {scene.rooms.map((r) => (
-        <RoomSurfaces key={r.id} room={r} height={wallH} />
+      {layout.rooms.map((r) => (
+        <RoomSurfaces key={r.id + r.polygon.length} room={r} height={wallH} />
+      ))}
+      {layout.zones.map((z) => (
+        <FloorPatch key={z.id} polygon={z.polygon} floor={z.floor} />
       ))}
 
       {scene.walls.map((w) => (
@@ -112,19 +117,28 @@ function FurnitureItem({ f, selected }: { f: Furniture; selected: boolean }) {
   );
 }
 
-function RoomSurfaces({ room, height }: { room: Room; height: number }) {
-  const [floorGeo, ceilGeo] = useMemo(() => {
-    const fs = new THREE.Shape(room.polygon.map(([x, y]) => new THREE.Vector2(x, -y)));
-    const cs = new THREE.Shape(room.polygon.map(([x, y]) => new THREE.Vector2(x, y)));
-    return [new THREE.ShapeGeometry(fs), new THREE.ShapeGeometry(cs)];
-  }, [room.polygon]);
+function shapeGeometry(polygon: Vec2[], flipY: boolean) {
+  return new THREE.ShapeGeometry(new THREE.Shape(polygon.map(([x, y]) => new THREE.Vector2(x, flipY ? -y : y))));
+}
+
+function RoomSurfaces({ room, height }: { room: ResolvedRoom; height: number }) {
+  const [floorGeo, ceilGeo] = useMemo(() => [shapeGeometry(room.polygon, true), shapeGeometry(room.polygon, false)], [room.polygon]);
   const mat = useMemo(() => floorMaterial(room.floor), [room.floor]);
   return (
     <>
       <mesh geometry={floorGeo} rotation-x={-Math.PI / 2} material={mat} receiveShadow />
-      <mesh geometry={ceilGeo} rotation-x={Math.PI / 2} position-y={height} material={material("plaster", "#f7f5f1", 3)} castShadow receiveShadow />
+      {room.ceiling && (
+        <mesh geometry={ceilGeo} rotation-x={Math.PI / 2} position-y={height} material={material("plaster", "#f7f5f1", 3)} castShadow receiveShadow />
+      )}
     </>
   );
+}
+
+/** Floor zone (e.g. kitchen tiles) drawn just above the room floor. */
+function FloorPatch({ polygon, floor }: { polygon: Vec2[]; floor: Room["floor"] }) {
+  const geo = useMemo(() => shapeGeometry(polygon, true), [polygon]);
+  const mat = useMemo(() => floorMaterial(floor), [floor]);
+  return <mesh geometry={geo} rotation-x={-Math.PI / 2} position-y={0.003} material={mat} receiveShadow />;
 }
 
 /** A wall is a set of boxes around its openings, plus window glass and frames. */
@@ -384,10 +398,5 @@ function useLookControls(wrap: React.RefObject<HTMLDivElement | null>) {
       el.removeEventListener("keyup", ku);
     };
   }, [wrap]);
-}
-
-function centroid(r: Room): [number, number] {
-  const n = r.polygon.length;
-  return [r.polygon.reduce((s, p) => s + p[0], 0) / n, r.polygon.reduce((s, p) => s + p[1], 0) / n];
 }
 

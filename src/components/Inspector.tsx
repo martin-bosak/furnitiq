@@ -5,7 +5,8 @@ import { motion } from "motion/react";
 import { useEffect, useState } from "react";
 import { CATALOG, CATALOG_KEYS, catalogItem } from "@/lib/scene/catalog";
 import { wallLength } from "@/lib/scene/ops";
-import type { Furniture } from "@/lib/scene/schema";
+import { resolveRooms, roomSelectionId } from "@/lib/scene/rooms";
+import type { Furniture, Room } from "@/lib/scene/schema";
 import { useEditor } from "@/store/editor";
 
 export function Inspector() {
@@ -16,7 +17,8 @@ export function Inspector() {
 
   const close = () => select(null);
   const remove = () => {
-    applyOps([{ op: "remove", id: selection.id }]);
+    // Unnamed rooms have no record to delete (their shape comes from the walls).
+    if (!selection.id.startsWith("face@")) applyOps([{ op: "remove", id: selection.id }]);
     select(null);
   };
 
@@ -127,6 +129,56 @@ export function Inspector() {
         </Row>
       </>
     );
+  } else if (selection.kind === "room") {
+    const r = resolveRooms(scene).rooms.find((x) => roomSelectionId(x) === selection.id);
+    if (!r) return null;
+    // Unnamed rooms get a label the first time they're edited.
+    const up = (patch: { name?: string; floor?: Room["floor"]; ceiling?: boolean }) => {
+      const before = new Set(scene.rooms.map((x) => x.id));
+      applyOps([{ op: "set_room", ...(r.labelId ? { id: r.labelId } : { at: r.labelAt }), ...patch }]);
+      if (!r.labelId) {
+        const added = useEditor.getState().scene.rooms.find((x) => !before.has(x.id));
+        if (added) select({ kind: "room", id: added.id });
+      }
+    };
+    title = r.name;
+    body = (
+      <>
+        <Row label="Name">
+          <TextField value={r.name} onCommit={(name) => up({ name })} />
+        </Row>
+        <Row label="Floor">
+          <FloorSelect value={r.floor} onChange={(floor) => up({ floor })} />
+        </Row>
+        <Row label="Ceiling">
+          <label className="flex items-center gap-2 text-xs text-white/70">
+            <input type="checkbox" checked={r.ceiling} onChange={(e) => up({ ceiling: e.target.checked })} className="accent-cyan-300" /> show in 3D
+          </label>
+        </Row>
+        <Row label="Area">
+          <span className="font-mono text-xs text-white/70">{r.area.toFixed(1)} m²</span>
+        </Row>
+        <p className="pt-1 text-[11px] leading-relaxed text-white/35">
+          The floor and ceiling follow the walls: move a wall and the room updates. Use the Floor zone tool for a different floor in part of the room.
+        </p>
+      </>
+    );
+  } else if (selection.kind === "zone") {
+    const z = scene.rooms.find((x) => x.id === selection.id && x.zone);
+    if (!z) return null;
+    const up = (patch: { name?: string; floor?: Room["floor"] }) => applyOps([{ op: "update_zone", id: z.id, patch }]);
+    title = z.name;
+    body = (
+      <>
+        <Row label="Name">
+          <TextField value={z.name} onCommit={(name) => up({ name })} />
+        </Row>
+        <Row label="Floor">
+          <FloorSelect value={z.floor} onChange={(floor) => up({ floor })} />
+        </Row>
+        <p className="pt-1 text-[11px] text-white/35">Drag the corner handles on the plan to reshape.</p>
+      </>
+    );
   } else if (selection.kind === "camera") {
     const c = scene.cameras.find((x) => x.id === selection.id);
     if (!c) return null;
@@ -166,6 +218,26 @@ export function Inspector() {
       </div>
       <div className="space-y-1.5">{body}</div>
     </motion.div>
+  );
+}
+
+const FLOORS: { id: Room["floor"]; label: string }[] = [
+  { id: "oak", label: "Wood (beech/oak)" },
+  { id: "walnut", label: "Wood (walnut)" },
+  { id: "tile", label: "Tiles" },
+  { id: "concrete", label: "Concrete" },
+  { id: "carpet", label: "Carpet" },
+];
+
+function FloorSelect({ value, onChange }: { value: Room["floor"]; onChange: (v: Room["floor"]) => void }) {
+  return (
+    <select className="field" value={value} onChange={(e) => onChange(e.target.value as Room["floor"])}>
+      {FLOORS.map((f) => (
+        <option key={f.id} value={f.id} className="bg-[#14161d]">
+          {f.label}
+        </option>
+      ))}
+    </select>
   );
 }
 

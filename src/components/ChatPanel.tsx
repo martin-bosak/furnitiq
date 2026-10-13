@@ -5,6 +5,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { nanoid } from "nanoid";
 import { useEffect, useRef, useState } from "react";
 import { catalogItem } from "@/lib/scene/catalog";
+import { resolveRooms, roomSelectionId } from "@/lib/scene/rooms";
 import type { SceneOp } from "@/lib/scene/ops";
 import { useEditor, type ChatMessage } from "@/store/editor";
 
@@ -44,6 +45,8 @@ export function ChatPanel({ available }: { available: { openrouter: boolean; cla
       return f ? (f.name ?? catalogItem(f.type).label) : null;
     }
     if (selection.kind === "camera") return scene.cameras.find((c) => c.id === selection.id)?.name ?? null;
+    if (selection.kind === "zone") return scene.rooms.find((r) => r.id === selection.id)?.name ?? "Floor zone";
+    if (selection.kind === "room") return resolveRooms(scene).rooms.find((r) => roomSelectionId(r) === selection.id)?.name ?? "Room";
     return selection.kind[0].toUpperCase() + selection.kind.slice(1);
   })();
 

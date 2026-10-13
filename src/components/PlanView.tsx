@@ -1,10 +1,11 @@
 "use client";
 
-import { Maximize2, Minus, Plus } from "lucide-react";
+import { LayoutGrid, Maximize2, Minus, MousePointer2, PenLine, Plus, Square } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { sceneBounds, wallAngle, wallLength, pointOnWall } from "@/lib/scene/ops";
-import type { Camera, Furniture, Scene, Vec2 } from "@/lib/scene/schema";
-import { useEditor } from "@/store/editor";
+import { pointInPolygon, resolveRooms, roomAt, roomSelectionId } from "@/lib/scene/rooms";
+import type { Camera, Furniture, Room, Scene, Vec2 } from "@/lib/scene/schema";
+import { useEditor, type Tool } from "@/store/editor";
 
 type View = { cx: number; cy: number; scale: number };
 
@@ -15,7 +16,21 @@ type Drag =
   | { mode: "camera"; id: string; start: Vec2; orig: Vec2; origTarget: Vec2; moved: boolean; startClient: Vec2 }
   | { mode: "target"; id: string; moved: boolean; startClient: Vec2 }
   | { mode: "wall-end"; id: string; end: "a" | "b"; orig: Vec2; moved: boolean; startClient: Vec2 }
-  | { mode: "opening"; id: string; moved: boolean; startClient: Vec2 };
+  | { mode: "opening"; id: string; moved: boolean; startClient: Vec2 }
+  | { mode: "zone-vertex"; id: string; index: number; moved: boolean; startClient: Vec2 };
+
+type SnapKind = "end" | "wall" | "angle" | "grid";
+type Snapped = { p: Vec2; kind: SnapKind };
+type Draft = { kind: "wall"; points: Vec2[] } | { kind: "rect"; tool: "room" | "zone"; a: Vec2; b: Vec2 };
+
+const TOOLS: { id: Tool; label: string; key: string; icon: React.ComponentType<{ size?: number }>; hint: string }[] = [
+  { id: "select", label: "Select", key: "V", icon: MousePointer2, hint: "" },
+  { id: "wall", label: "Wall", key: "W", icon: PenLine, hint: "Click to place corners · click the first point, double-click or Enter to finish · Esc to stop" },
+  { id: "room", label: "Room", key: "B", icon: Square, hint: "Drag a rectangle: creates 4 walls and the room (floor + ceiling)" },
+  { id: "zone", label: "Floor zone", key: "F", icon: LayoutGrid, hint: "Drag a rectangle for a different floor inside a room (e.g. kitchen tiles)" },
+];
+
+
 
 const snap = (v: number, step: number) => Math.round(v / step) * step;
 const deg = (r: number) => (r * 180) / Math.PI;
@@ -25,7 +40,17 @@ export function PlanView() {
   const scene = useEditor((s) => s.scene);
   const selection = useEditor((s) => s.selection);
   const pin = useEditor((s) => s.pin);
-  const { select, setPin, transient, checkpoint, setActiveCamera } = useEditor.getState();
+  const tool = useEditor((s) => s.tool);
+  const { select, setPin, transient, checkpoint, setActiveCamera, applyOps, setTool } = useEditor.getState();
+  const layout = resolveRooms(scene);
+  const [draft, setDraftState] = useState<Draft | null>(null);
+  // Handlers read the ref: pointer events can arrive faster than React re-renders.
+  const draftRef = useRef<Draft | null>(null);
+  const setDraft = (d: Draft | null) => {
+    draftRef.current = d;
+    setDraftState(d);
+  };
+  const [hover, setHover] = useState<Snapped | null>(null);
 
   const wrapRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -101,13 +126,80 @@ export function PlanView() {
     drag.current = d;
   };
 
+  const wallHeight = scene.walls.length ? Math.max(...scene.walls.map((w) => w.height)) : 2.65;
+
+  /** Snap to wall ends, points on walls, 45° angles from `from`, then a 5 cm grid (Alt = 1 cm, Shift = no angle snap). */
+  const snapPoint = (w: Vec2, from: Vec2 | undefined, e: { altKey: boolean; shiftKey: boolean }): Snapped => {
+    const live = useEditor.getState().scene;
+    const d = draftRef.current;
+    const ends: Vec2[] = [...live.walls.flatMap((wl) => [wl.a, wl.b]), ...(d?.kind === "wall" ? d.points : [])];
+    let best: Vec2 | null = null;
+    let bestD = px(12);
+    for (const q of ends) {
+      const d = Math.hypot(q[0] - w[0], q[1] - w[1]);
+      if (d < bestD) {
+        bestD = d;
+        best = q;
+      }
+    }
+    if (best) return { p: [best[0], best[1]], kind: "end" };
+    for (const wl of live.walls) {
+      const dx = wl.b[0] - wl.a[0];
+      const dy = wl.b[1] - wl.a[1];
+      const len2 = dx * dx + dy * dy || 1e-9;
+      const t = Math.max(0, Math.min(1, ((w[0] - wl.a[0]) * dx + (w[1] - wl.a[1]) * dy) / len2));
+      const q: Vec2 = [wl.a[0] + t * dx, wl.a[1] + t * dy];
+      if (Math.hypot(q[0] - w[0], q[1] - w[1]) < px(9)) return { p: [Math.round(q[0] * 1000) / 1000, Math.round(q[1] * 1000) / 1000], kind: "wall" };
+    }
+    const step = e.altKey ? 0.01 : 0.05;
+    if (from && !e.shiftKey) {
+      const ang = Math.atan2(w[1] - from[1], w[0] - from[0]);
+      const snapped = Math.round(ang / (Math.PI / 4)) * (Math.PI / 4);
+      if (Math.abs(ang - snapped) < (8 * Math.PI) / 180) {
+        const len = snap(Math.hypot(w[0] - from[0], w[1] - from[1]), step);
+        return { p: [round3(from[0] + Math.cos(snapped) * len), round3(from[1] + Math.sin(snapped) * len)], kind: "angle" };
+      }
+    }
+    return { p: [round3(snap(w[0], step)), round3(snap(w[1], step))], kind: "grid" };
+  };
+
+  const finishWall = () => setDraft(null);
+
+  // Drawing tools take the pointer before furniture/walls/cameras do.
+  const onPointerDownCapture = (e: React.PointerEvent) => {
+    if (tool === "select" || e.button !== 0) return;
+    e.stopPropagation();
+    const draft = draftRef.current;
+    const last = draft?.kind === "wall" ? draft.points.at(-1) : undefined;
+    const { p } = snapPoint(toWorld(e.clientX, e.clientY), last, e);
+    if (tool === "wall") {
+      const pts = draft?.kind === "wall" ? draft.points : [];
+      if (last && same(last, p)) return;
+      if (last) applyOps([{ op: "add_wall", a: last, b: p, height: wallHeight }]);
+      if (pts.length >= 2 && same(pts[0], p)) return finishWall(); // closed the loop
+      setDraft({ kind: "wall", points: [...pts, p] });
+      return;
+    }
+    svgRef.current?.setPointerCapture(e.pointerId);
+    setDraft({ kind: "rect", tool, a: p, b: p });
+  };
+
   const onPointerDown = (e: React.PointerEvent) => {
-    if (e.button !== 0 && e.button !== 1) return;
-    begin(e, { mode: "pan", startClient: [e.clientX, e.clientY], startView: view, moved: false, world: toWorld(e.clientX, e.clientY) });
+    if (e.button === 1 || (e.button === 0 && tool === "select")) {
+      begin(e, { mode: "pan", startClient: [e.clientX, e.clientY], startView: view, moved: false, world: toWorld(e.clientX, e.clientY) });
+    }
   };
 
   const onPointerMove = (e: React.PointerEvent) => {
     const d = drag.current;
+    if (!d && tool !== "select") {
+      const draft = draftRef.current;
+      const from = draft?.kind === "wall" ? draft.points.at(-1) : undefined;
+      const sp = snapPoint(toWorld(e.clientX, e.clientY), from, e);
+      setHover(sp);
+      if (draft?.kind === "rect") setDraft({ ...draft, b: sp.p });
+      return;
+    }
     if (!d) return;
     if (!d.moved) {
       if (Math.hypot(e.clientX - d.startClient[0], e.clientY - d.startClient[1]) < 3) return;
@@ -173,6 +265,14 @@ export function PlanView() {
         d.orig = p;
         break;
       }
+      case "zone-vertex": {
+        const q: Vec2 = [round3(snap(w[0], step)), round3(snap(w[1], step))];
+        transient((s) => ({
+          ...s,
+          rooms: s.rooms.map((r) => (r.id === d.id && r.polygon ? { ...r, polygon: r.polygon.map((pt, i) => (i === d.index ? q : pt)) } : r)),
+        }));
+        break;
+      }
       case "opening": {
         transient((s) => {
           const o = s.openings.find((x) => x.id === d.id);
@@ -192,12 +292,49 @@ export function PlanView() {
   const onPointerUp = (e: React.PointerEvent) => {
     const d = drag.current;
     drag.current = null;
-    svgRef.current?.releasePointerCapture(e.pointerId);
+    if (svgRef.current?.hasPointerCapture(e.pointerId)) svgRef.current.releasePointerCapture(e.pointerId);
+    const draft = draftRef.current;
+    if (draft?.kind === "rect") {
+      const a = draft.a;
+      const b = snapPoint(toWorld(e.clientX, e.clientY), undefined, e).p;
+      setDraft(null);
+      if (Math.abs(b[0] - a[0]) < 0.3 || Math.abs(b[1] - a[1]) < 0.3) return;
+      const before = new Set(useEditor.getState().scene.rooms.map((r) => r.id));
+      if (draft.tool === "room") applyOps([{ op: "add_room", a, b, height: wallHeight }]);
+      else applyOps([{ op: "add_zone", floor: "tile", polygon: [a, [b[0], a[1]], b, [a[0], b[1]]] }]);
+      const added = useEditor.getState().scene.rooms.find((r) => !before.has(r.id));
+      if (added) select({ kind: added.zone ? "zone" : "room", id: added.id });
+      return;
+    }
     if (d?.mode === "pan" && !d.moved) {
-      select(null);
-      setPin([Math.round(d.world[0] * 100) / 100, Math.round(d.world[1] * 100) / 100]);
+      // Click on the floor: pin the spot and select the zone/room under it.
+      const p: Vec2 = [Math.round(d.world[0] * 100) / 100, Math.round(d.world[1] * 100) / 100];
+      setPin(p);
+      const zone = [...layout.zones].reverse().find((z) => pointInPolygon(p, z.polygon));
+      const room = roomAt(scene, p);
+      select(zone ? { kind: "zone", id: zone.id } : room ? { kind: "room", id: roomSelectionId(room) } : null);
     }
   };
+
+  // Tool keys inside the plan: Enter finishes a wall run, Esc cancels / returns to Select.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.target as HTMLElement).closest("input, textarea, select, [contenteditable]")) return;
+      if (e.key === "Enter" && draft?.kind === "wall") finishWall();
+      if (e.key === "Escape") {
+        if (draft) setDraft(null);
+        else if (tool !== "select") setTool("select");
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [draft, tool, setTool]);
+
+  // Switching tools drops any unfinished drawing.
+  useEffect(() => {
+    setDraft(null);
+    setHover(null);
+  }, [tool]);
 
   const zoom = (f: number) => setView((v) => ({ ...v, scale: Math.min(400, Math.max(12, v.scale * f)) }));
 
@@ -214,9 +351,18 @@ export function PlanView() {
         height={size.h}
         viewBox={`${vb.x} ${vb.y} ${vb.w} ${vb.h}`}
         className="block touch-none select-none"
+        onPointerDownCapture={onPointerDownCapture}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
+        onPointerLeave={() => setHover(null)}
+        onDoubleClick={() => tool === "wall" && finishWall()}
+        onContextMenu={(e) => {
+          if (tool !== "select") {
+            e.preventDefault();
+            setDraft(null);
+          }
+        }}
         style={{ cursor: drag.current?.mode === "pan" && drag.current.moved ? "grabbing" : "crosshair" }}
       >
         <defs>
@@ -231,6 +377,9 @@ export function PlanView() {
             <stop offset="0%" stopColor="#7cf0ff" stopOpacity={0.35} />
             <stop offset="100%" stopColor="#7cf0ff" stopOpacity={0} />
           </radialGradient>
+          <pattern id="zone-hatch" width={0.2} height={0.2} patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+            <line x1={0} y1={0} x2={0} y2={0.2} stroke="rgb(159 216 255 / 0.18)" strokeWidth={px(1.5)} />
+          </pattern>
           <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
             <feGaussianBlur stdDeviation={px(4)} result="b" />
             <feMerge>
@@ -242,20 +391,38 @@ export function PlanView() {
 
         <rect x={vb.x} y={vb.y} width={vb.w} height={vb.h} fill="url(#grid)" />
 
-        {/* Rooms */}
-        {scene.rooms.map((r) => {
-          const c = centroid(r.polygon);
+        {/* Rooms: closed wall loops (floors/ceilings follow the walls) */}
+        {layout.rooms.map((r) => {
+          const sel = selection?.kind === "room" && selection.id === roomSelectionId(r);
           return (
-            <g key={r.id}>
+            <g key={r.id} pointerEvents="none">
               <polygon
                 points={r.polygon.map((p) => p.join(",")).join(" ")}
-                fill={r.floor === "tile" ? "rgb(140 170 200 / 0.07)" : "rgb(255 200 140 / 0.05)"}
+                fill={sel ? "rgb(124 240 255 / 0.08)" : FLOOR_TINT[r.floor]}
+                stroke={sel ? "#7cf0ff" : "none"}
+                strokeOpacity={0.5}
+                strokeWidth={px(1.5)}
+                strokeDasharray={`${px(5)} ${px(4)}`}
               />
-              <text x={c[0]} y={c[1]} textAnchor="middle" fontSize={px(11)} fill="rgb(255 255 255 / 0.28)" style={{ letterSpacing: px(1.5) }}>
+              <text x={r.labelAt[0]} y={r.labelAt[1]} textAnchor="middle" fontSize={px(11)} fill={sel ? "#7cf0ff" : "rgb(255 255 255 / 0.32)"} style={{ letterSpacing: px(1.5) }}>
                 {r.name.toUpperCase()}
               </text>
-              <text x={c[0]} y={c[1] + px(15)} textAnchor="middle" fontSize={px(10)} fill="rgb(255 255 255 / 0.18)" fontFamily="var(--font-mono)">
-                {area(r.polygon).toFixed(1)} m²
+              <text x={r.labelAt[0]} y={r.labelAt[1] + px(15)} textAnchor="middle" fontSize={px(10)} fill="rgb(255 255 255 / 0.2)" fontFamily="var(--font-mono)">
+                {r.area.toFixed(1)} m²
+              </text>
+            </g>
+          );
+        })}
+
+        {/* Floor zones */}
+        {layout.zones.map((z) => {
+          const sel = selection?.kind === "zone" && selection.id === z.id;
+          const c = centroid(z.polygon);
+          return (
+            <g key={z.id} pointerEvents="none">
+              <polygon points={z.polygon.map((p) => p.join(",")).join(" ")} fill="url(#zone-hatch)" stroke={sel ? "#7cf0ff" : "rgb(159 216 255 / 0.35)"} strokeWidth={px(sel ? 1.8 : 1)} strokeDasharray={`${px(3)} ${px(3)}`} />
+              <text x={c[0]} y={c[1]} textAnchor="middle" fontSize={px(9)} fill={sel ? "#7cf0ff" : "rgb(159 216 255 / 0.55)"}>
+                {z.name} · {z.floor}
               </text>
             </g>
           );
@@ -389,6 +556,66 @@ export function PlanView() {
           />
         ))}
 
+        {/* Zone corner handles */}
+        {selection?.kind === "zone" &&
+          layout.zones
+            .filter((z) => z.id === selection.id)
+            .flatMap((z) =>
+              z.polygon.map((pt, i) => (
+                <circle
+                  key={i}
+                  cx={pt[0]}
+                  cy={pt[1]}
+                  r={px(6)}
+                  fill="#0b0d13"
+                  stroke="#7cf0ff"
+                  strokeWidth={px(2)}
+                  className="cursor-move"
+                  onPointerDown={(e) => begin(e, { mode: "zone-vertex", id: z.id, index: i, moved: false, startClient: [e.clientX, e.clientY] })}
+                />
+              )),
+            )}
+
+        {/* Wall ends that don't connect: why a room isn't closed */}
+        {(tool === "wall" || tool === "room" || selection?.kind === "wall") &&
+          layout.openEnds.map((p, i) => (
+            <circle key={i} cx={p[0]} cy={p[1]} r={px(5)} fill="none" stroke="#ffb86b" strokeWidth={px(1.5)} pointerEvents="none">
+              <title>Open wall end — connect it to close the room</title>
+            </circle>
+          ))}
+
+        {/* Drawing preview */}
+        {draft?.kind === "wall" && (
+          <g pointerEvents="none">
+            <polyline points={draft.points.map((p) => p.join(",")).join(" ")} fill="none" stroke="#7cf0ff" strokeWidth={0.12} strokeOpacity={0.35} />
+            {hover && draft.points.length > 0 && <LengthLine a={draft.points.at(-1)!} b={hover.p} px={px} />}
+            {draft.points.map((p, i) => (
+              <circle key={i} cx={p[0]} cy={p[1]} r={px(i === 0 ? 6 : 4)} fill={i === 0 ? "#0b0d13" : "#7cf0ff"} stroke="#7cf0ff" strokeWidth={px(1.5)} />
+            ))}
+          </g>
+        )}
+        {draft?.kind === "rect" && (
+          <g pointerEvents="none">
+            <rect
+              x={Math.min(draft.a[0], draft.b[0])}
+              y={Math.min(draft.a[1], draft.b[1])}
+              width={Math.abs(draft.b[0] - draft.a[0])}
+              height={Math.abs(draft.b[1] - draft.a[1])}
+              fill={draft.tool === "zone" ? "url(#zone-hatch)" : "rgb(124 240 255 / 0.06)"}
+              stroke="#7cf0ff"
+              strokeWidth={draft.tool === "room" ? 0.12 : px(1.5)}
+              strokeOpacity={draft.tool === "room" ? 0.4 : 0.9}
+              strokeDasharray={draft.tool === "zone" ? `${px(4)} ${px(3)}` : undefined}
+            />
+            <Tag at={[(draft.a[0] + draft.b[0]) / 2, Math.min(draft.a[1], draft.b[1]) - px(14)]} px={px}>
+              {Math.abs(draft.b[0] - draft.a[0]).toFixed(2)} × {Math.abs(draft.b[1] - draft.a[1]).toFixed(2)} m · {(Math.abs(draft.b[0] - draft.a[0]) * Math.abs(draft.b[1] - draft.a[1])).toFixed(1)} m²
+            </Tag>
+          </g>
+        )}
+        {tool !== "select" && hover && (
+          <circle cx={hover.p[0]} cy={hover.p[1]} r={px(hover.kind === "grid" ? 3 : 6)} fill={hover.kind === "grid" ? "white" : "none"} fillOpacity={0.6} stroke={SNAP_COLOR[hover.kind]} strokeWidth={px(2)} pointerEvents="none" />
+        )}
+
         {/* Pin */}
         {pin && (
           <g transform={`translate(${pin[0]} ${pin[1]})`} filter="url(#glow)" pointerEvents="none">
@@ -400,6 +627,25 @@ export function PlanView() {
           </g>
         )}
       </svg>
+
+      <div className="absolute top-3 right-3 z-10 flex flex-col items-end gap-2" onPointerDown={(e) => e.stopPropagation()}>
+        <div className="glass flex items-center gap-0.5 rounded-full p-1">
+          {TOOLS.map((t) => (
+            <button
+              key={t.id}
+              onClick={() => setTool(t.id)}
+              title={`${t.label} (${t.key})`}
+              className={`flex h-8 items-center gap-1.5 rounded-full px-3 text-xs transition ${tool === t.id ? "bg-cyan-300/90 text-[#07080c]" : "text-white/65 hover:bg-white/10 hover:text-white"}`}
+            >
+              <t.icon size={14} />
+              <span className="hidden xl:inline">{t.label}</span>
+            </button>
+          ))}
+        </div>
+        {tool !== "select" && (
+          <div className="glass max-w-72 rounded-2xl px-3 py-1.5 text-right text-[11px] leading-snug text-white/60">{TOOLS.find((t) => t.id === tool)?.hint}</div>
+        )}
+      </div>
 
       <div className="glass absolute right-3 bottom-3 flex items-center gap-0.5 rounded-full p-1">
         <button className="icon-btn !h-8 !w-8" onClick={() => zoom(1 / 1.25)} title="Zoom out">
@@ -562,4 +808,42 @@ function area(poly: Vec2[]) {
 function centroid(poly: Vec2[]): Vec2 {
   const n = poly.length;
   return [poly.reduce((s, p) => s + p[0], 0) / n, poly.reduce((s, p) => s + p[1], 0) / n];
+}
+
+const round3 = (n: number) => Math.round(n * 1000) / 1000;
+
+const SNAP_COLOR: Record<SnapKind, string> = { end: "#7cf0ff", wall: "#a78bfa", angle: "#ffb86b", grid: "rgb(255 255 255 / 0.6)" };
+
+const FLOOR_TINT: Record<Room["floor"], string> = {
+  oak: "rgb(255 200 140 / 0.05)",
+  walnut: "rgb(190 130 90 / 0.07)",
+  tile: "rgb(140 170 200 / 0.07)",
+  concrete: "rgb(200 200 200 / 0.05)",
+  carpet: "rgb(200 170 220 / 0.06)",
+};
+
+function Tag({ at, px, children }: { at: Vec2; px: (n: number) => number; children: React.ReactNode }) {
+  return (
+    <g transform={`translate(${at[0]} ${at[1]})`}>
+      <rect x={px(-62)} y={px(-9)} width={px(124)} height={px(17)} rx={px(8.5)} fill="#7cf0ff" />
+      <text y={px(3.5)} textAnchor="middle" fontSize={px(10)} fill="#07080c" fontFamily="var(--font-mono)">
+        {children}
+      </text>
+    </g>
+  );
+}
+
+function LengthLine({ a, b, px }: { a: Vec2; b: Vec2; px: (n: number) => number }) {
+  const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+  return (
+    <>
+      <line x1={a[0]} y1={a[1]} x2={b[0]} y2={b[1]} stroke="#7cf0ff" strokeWidth={0.12} strokeOpacity={0.55} />
+      <line x1={a[0]} y1={a[1]} x2={b[0]} y2={b[1]} stroke="#7cf0ff" strokeWidth={px(1)} strokeDasharray={`${px(4)} ${px(3)}`} />
+      {len > 0.05 && (
+        <Tag at={[(a[0] + b[0]) / 2, (a[1] + b[1]) / 2 - px(14)]} px={px}>
+          {len.toFixed(2)} m
+        </Tag>
+      )}
+    </>
+  );
 }

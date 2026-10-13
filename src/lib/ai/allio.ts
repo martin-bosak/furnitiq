@@ -44,7 +44,7 @@ export async function createAllioTask(ctx: ChatContext, agent?: string) {
 ---
 ${systemPrompt(ctx).replace(/Current scene:[\s\S]*$/, "")}
 Respond by setting this task's status to "done" and appending a fenced block with language \`furnitiq-result\` containing JSON: {"reply": string, "ops": SceneOp[]}.
-SceneOp kinds: add_furniture, update_furniture{id,patch}, remove{id}, add_wall, update_wall{id,patch}, add_opening, update_opening{id,patch}, set_camera, set_style{prompt}.
+SceneOp kinds: add_furniture, update_furniture{id,patch}, remove{id}, add_wall, update_wall{id,patch}, add_opening, update_opening{id,patch}, add_room{a,b|polygon,name,floor}, set_room{id|at,name,floor,ceiling}, add_zone{polygon,floor,name}, update_zone{id,patch}, set_camera, set_style{prompt}. Floors/ceilings come from closed wall loops automatically.
 
 Scene:
 \`\`\`json

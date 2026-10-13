@@ -19,6 +19,9 @@ export type Render = { id: string; url: string; cameraName: string; prompt: stri
 
 export type AiProvider = "openrouter" | "claude" | "allio";
 
+/** Plan editing tool. */
+export type Tool = "select" | "wall" | "room" | "zone";
+
 type EditorState = {
   projectId: string | null;
   /** Server version the local scene is based on (optimistic concurrency). */
@@ -38,6 +41,7 @@ type EditorState = {
   /** Path-traced photo mode in the 3D view. */
   photoMode: boolean;
   photoSamples: number;
+  tool: Tool;
   exposure: number;
 
   load: (projectId: string | null, scene: Scene, renders?: Render[], updatedAt?: string | null) => void;
@@ -60,6 +64,7 @@ type EditorState = {
   setProvider: (p: AiProvider) => void;
   setAllioAgent: (a: string) => void;
   setPhotoMode: (v: boolean) => void;
+  setTool: (t: Tool) => void;
   setPhotoSamples: (n: number) => void;
   setExposure: (v: number) => void;
 };
@@ -82,6 +87,7 @@ export const useEditor = create<EditorState>((set, get) => ({
   allioAgent: "",
   photoMode: false,
   photoSamples: 0,
+  tool: "select",
   exposure: 1,
 
   load: (projectId, scene, renders = [], updatedAt = null) =>
@@ -126,6 +132,7 @@ export const useEditor = create<EditorState>((set, get) => ({
   setProvider: (provider) => set({ provider }),
   setAllioAgent: (allioAgent) => set({ allioAgent }),
   setPhotoMode: (photoMode) => set({ photoMode, photoSamples: 0 }),
+  setTool: (tool) => set({ tool }),
   setPhotoSamples: (photoSamples) => set({ photoSamples }),
   setExposure: (exposure) => set({ exposure }),
 }));

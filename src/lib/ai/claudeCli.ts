@@ -30,6 +30,10 @@ const OPS_SPEC = `SceneOp JSON shapes (all coordinates in meters, rotation in de
 {"op":"add_opening","wallId":s,"kind":"door"|"window","offset":n,"width"?:n,"height"?:n,"sill"?:n}
 {"op":"update_opening","id":s,"patch":{"offset"?:n,"width"?:n,"height"?:n,"sill"?:n}}
 {"op":"set_camera","id"?:s,"name"?:s,"position"?:[x,y],"target"?:[x,y],"height"?:n,"fov"?:n,"activate"?:bool}
+{"op":"add_room","a"?:[x,y],"b"?:[x,y],"polygon"?:[[x,y],...],"name"?:s,"floor"?:"oak"|"walnut"|"tile"|"concrete"|"carpet","height"?:n}
+{"op":"set_room","id"?:s,"at"?:[x,y],"name"?:s,"floor"?:s,"ceiling"?:bool}
+{"op":"add_zone","polygon":[[x,y],...],"floor":s,"name"?:s}
+{"op":"update_zone","id":s,"patch":{"polygon"?:[[x,y],...],"floor"?:s,"name"?:s}}
 {"op":"set_style","prompt":s}`;
 
 export async function runClaudeCli(ctx: ChatContext): Promise<AgentResult> {
