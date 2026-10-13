@@ -12,7 +12,7 @@ import { Inspector } from "./Inspector";
 import { Palette } from "./Palette";
 import { PlanView } from "./PlanView";
 
-type Status = { db: "postgres" | "local"; openrouter: boolean; allio: boolean; allioDefaultAgent: string; chatModel: string; imageModel: string };
+type Status = { db: "postgres" | "local"; openrouter: boolean; claudeCli: boolean; allio: boolean; allioDefaultAgent: string; chatModel: string; imageModel: string };
 type ProjectSummary = { id: string; name: string; updatedAt: string };
 
 export function Studio() {
@@ -24,8 +24,8 @@ export function Studio() {
     async (id: string) => {
       const res = await fetch(`/api/projects/${id}`);
       if (!res.ok) return false;
-      const p = (await res.json()) as { id: string; scene: Scene; renders: Render[] };
-      load(p.id, parseScene(p.scene), p.renders);
+      const p = (await res.json()) as { id: string; scene: Scene; renders: Render[]; updatedAt: string };
+      load(p.id, parseScene(p.scene), p.renders, p.updatedAt);
       history.replaceState(null, "", `?p=${p.id}`);
       try {
         localStorage.setItem("furnitiq:last", p.id);
@@ -55,6 +55,7 @@ export function Studio() {
         .then((s: Status) => {
           setStatus(s);
           if (s.allioDefaultAgent && !useEditor.getState().allioAgent) useEditor.getState().setAllioAgent(s.allioDefaultAgent);
+          if (!s.openrouter && s.claudeCli) useEditor.getState().setProvider("claude");
         })
         .catch(() => {});
       let last: string | null = new URLSearchParams(location.search).get("p");
@@ -68,7 +69,13 @@ export function Studio() {
     })().catch((e) => console.error("[furnitiq] boot failed", e));
   }, [openProject, createProject]);
 
-  useAutosave();
+  const [notice, setNotice] = useState<string | null>(null);
+  useAutosave(setNotice);
+  useEffect(() => {
+    if (!notice) return;
+    const t = setTimeout(() => setNotice(null), 5000);
+    return () => clearTimeout(t);
+  }, [notice]);
   useShortcuts();
 
   return (
@@ -85,9 +92,22 @@ export function Studio() {
           <CameraPanel />
         </section>
         <aside className="glass-strong hidden min-h-0 rounded-[2rem] xl:block">
-          <ChatPanel allioAvailable={!!status?.allio} />
+          <ChatPanel available={{ openrouter: !!status?.openrouter, claude: !!status?.claudeCli, allio: !!status?.allio }} />
         </aside>
       </main>
+
+      <AnimatePresence>
+        {notice && (
+          <motion.div
+            initial={{ opacity: 0, y: -8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -8 }}
+            className="glass-strong fixed top-20 left-1/2 z-50 -translate-x-1/2 rounded-full px-4 py-2 text-xs text-white/80"
+          >
+            {notice}
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Chat drawer for narrower screens */}
       <button onClick={() => setChatOpen(true)} className="glass-strong fixed right-5 bottom-5 z-30 grid h-12 w-12 place-items-center rounded-full text-cyan-100 xl:hidden">
@@ -105,7 +125,7 @@ export function Studio() {
             <button onClick={() => setChatOpen(false)} className="icon-btn absolute top-3 right-3 z-10">
               <X size={16} />
             </button>
-            <ChatPanel allioAvailable={!!status?.allio} />
+            <ChatPanel available={{ openrouter: !!status?.openrouter, claude: !!status?.claudeCli, allio: !!status?.allio }} />
           </motion.aside>
         )}
       </AnimatePresence>
@@ -234,9 +254,12 @@ function TopBar({ status, openProject, createProject }: { status: Status | null;
               <CloudOff size={12} /> Local storage
             </span>
           )}
-          <span className={`flex h-7 items-center gap-1.5 rounded-full bg-white/5 px-2.5 text-[11px] ${status.openrouter ? "text-white/55" : "text-rose-200/80"}`} title={`Chat: ${status.chatModel}\nImage: ${status.imageModel}`}>
-            <span className={`h-1.5 w-1.5 rounded-full ${status.openrouter ? "bg-emerald-300 shadow-[0_0_6px_#6ee7b7]" : "bg-rose-400"}`} />
-            {status.openrouter ? "AI ready" : "No OPENROUTER_API_KEY"}
+          <span
+            className={`flex h-7 items-center gap-1.5 rounded-full bg-white/5 px-2.5 text-[11px] ${status.openrouter || status.claudeCli ? "text-white/55" : "text-rose-200/80"}`}
+            title={`Chat: ${status.openrouter ? status.chatModel : status.claudeCli ? "local Claude Code CLI" : "—"}\nPhoto renders: ${status.openrouter ? status.imageModel : "need OPENROUTER_API_KEY"}`}
+          >
+            <span className={`h-1.5 w-1.5 rounded-full ${status.openrouter ? "bg-emerald-300 shadow-[0_0_6px_#6ee7b7]" : status.claudeCli ? "bg-amber-300" : "bg-rose-400"}`} />
+            {status.openrouter ? "AI ready" : status.claudeCli ? "Chat via Claude Code · no renders" : "No AI configured"}
           </span>
         </div>
       )}
@@ -259,7 +282,7 @@ function TopBar({ status, openProject, createProject }: { status: Status | null;
   );
 }
 
-function useAutosave() {
+function useAutosave(setNotice: (n: string | null) => void) {
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | null = null;
     const save = async () => {
@@ -268,10 +291,23 @@ function useAutosave() {
       const scene = st.scene;
       st.setSaving(true);
       try {
-        await fetch(`/api/projects/${st.projectId}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ scene }) });
+        const res = await fetch(`/api/projects/${st.projectId}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ scene, baseUpdatedAt: st.updatedAt }),
+        });
+        const data = await res.json();
+        const now = useEditor.getState();
+        if (res.status === 409) {
+          // Changed elsewhere (another tab, an agent, an import): take the newer version.
+          now.load(data.project.id, parseScene(data.project.scene), now.renders, data.project.updatedAt);
+          setNotice("This project was updated elsewhere — loaded the latest version.");
+          return;
+        }
+        if (!res.ok) throw new Error(data.error);
         // Only mark clean if nothing changed while saving.
-        if (useEditor.getState().scene === scene) useEditor.getState().markSaved();
-        else useEditor.getState().setSaving(false);
+        if (now.scene === scene) now.markSaved(data.updatedAt);
+        else useEditor.setState({ saving: false, updatedAt: data.updatedAt });
       } catch {
         useEditor.getState().setSaving(false);
       }
@@ -286,7 +322,7 @@ function useAutosave() {
       unsub();
       if (timer) clearTimeout(timer);
     };
-  }, []);
+  }, [setNotice]);
 }
 
 function useShortcuts() {

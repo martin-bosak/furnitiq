@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
 import { runChatAgent } from "@/lib/ai/agent";
 import { createAllioTask } from "@/lib/ai/allio";
+import { runClaudeCli } from "@/lib/ai/claudeCli";
 import { parseScene } from "@/lib/scene/schema";
 
-export const maxDuration = 120;
+export const maxDuration = 300;
 
 export async function POST(req: Request) {
   const body = await req.json();
@@ -15,6 +16,9 @@ export async function POST(req: Request) {
     pin: body.pin ?? null,
   };
   try {
+    if (body.provider === "claude") {
+      return NextResponse.json(await runClaudeCli(ctx));
+    }
     if (body.provider === "allio") {
       return NextResponse.json({ taskId: await createAllioTask(ctx, body.agent) });
     }

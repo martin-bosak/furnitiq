@@ -30,6 +30,8 @@ All edits go through **`SceneOp`s** (`src/lib/scene/ops.ts`). The UI, the chat a
 
 - **Chat** (`POST /api/chat`): the model gets a compact scene, the selection and the pinned point, and edits through tools. The tools are applied server-side for validation, and the ops are applied client-side as one undoable step.
 - **Photo** (`POST /api/render`): the viewport is captured and sent with a style prompt to an image model (`FURNITIQ_IMAGE_MODEL`). The model keeps the geometry and camera and replaces materials and lighting. The lightbox has a before/after slider.
+- **Claude Code provider** (local): if the `claude` CLI is installed where the server runs, chat can go through `claude -p` headless mode with all tools disabled. It uses your Claude Code login, so no API key is needed. It is selected automatically when `OPENROUTER_API_KEY` is missing. Photo renders still need OpenRouter, because Claude doesn't generate images.
+- **Saving** uses optimistic concurrency: every save sends the version it was based on, and a stale tab gets `409` plus the latest version instead of overwriting newer work. Scripts can pass `"force": true`.
 - **Allio provider**: the chat request becomes an Allio board task assigned to an agent. The agent replies by setting `status=done` and appending:
 
   ````

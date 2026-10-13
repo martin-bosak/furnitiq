@@ -17,10 +17,12 @@ export type ChatMessage = {
 
 export type Render = { id: string; url: string; cameraName: string; prompt: string; createdAt: string };
 
-export type AiProvider = "openrouter" | "allio";
+export type AiProvider = "openrouter" | "claude" | "allio";
 
 type EditorState = {
   projectId: string | null;
+  /** Server version the local scene is based on (optimistic concurrency). */
+  updatedAt: string | null;
   scene: Scene;
   past: Scene[];
   future: Scene[];
@@ -34,7 +36,7 @@ type EditorState = {
   provider: AiProvider;
   allioAgent: string;
 
-  load: (projectId: string | null, scene: Scene, renders?: Render[]) => void;
+  load: (projectId: string | null, scene: Scene, renders?: Render[], updatedAt?: string | null) => void;
   /** Undoable change. */
   commit: (next: Scene | ((s: Scene) => Scene)) => void;
   /** Non-undoable change (drag in progress). Call `checkpoint()` once before. */
@@ -50,7 +52,7 @@ type EditorState = {
   updateMessage: (id: string, patch: Partial<ChatMessage>) => void;
   addRender: (r: Render) => void;
   setSaving: (v: boolean) => void;
-  markSaved: () => void;
+  markSaved: (updatedAt: string) => void;
   setProvider: (p: AiProvider) => void;
   setAllioAgent: (a: string) => void;
 };
@@ -59,6 +61,7 @@ const HISTORY = 100;
 
 export const useEditor = create<EditorState>((set, get) => ({
   projectId: null,
+  updatedAt: null,
   scene: sampleScene(),
   past: [],
   future: [],
@@ -71,8 +74,8 @@ export const useEditor = create<EditorState>((set, get) => ({
   provider: "openrouter",
   allioAgent: "",
 
-  load: (projectId, scene, renders = []) =>
-    set({ projectId, scene, renders, past: [], future: [], dirty: false, selection: null, pin: null }),
+  load: (projectId, scene, renders = [], updatedAt = null) =>
+    set({ projectId, scene, renders, updatedAt, past: [], future: [], dirty: false, saving: false, selection: null, pin: null }),
 
   commit: (next) =>
     set((st) => {
@@ -109,7 +112,7 @@ export const useEditor = create<EditorState>((set, get) => ({
     set((st) => ({ messages: st.messages.map((m) => (m.id === id ? { ...m, ...patch } : m)) })),
   addRender: (r) => set((st) => ({ renders: [r, ...st.renders] })),
   setSaving: (saving) => set({ saving }),
-  markSaved: () => set({ dirty: false, saving: false }),
+  markSaved: (updatedAt) => set({ dirty: false, saving: false, updatedAt }),
   setProvider: (provider) => set({ provider }),
   setAllioAgent: (allioAgent) => set({ allioAgent }),
 }));

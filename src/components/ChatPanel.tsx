@@ -8,6 +8,12 @@ import { catalogItem } from "@/lib/scene/catalog";
 import type { SceneOp } from "@/lib/scene/ops";
 import { useEditor, type ChatMessage } from "@/store/editor";
 
+const PROVIDERS = [
+  { id: "openrouter", label: "OpenRouter", hint: "OpenRouter API", missing: "Set OPENROUTER_API_KEY to enable" },
+  { id: "claude", label: "Claude Code", hint: "Your local Claude Code CLI (claude -p)", missing: "Claude Code CLI not found on the server" },
+  { id: "allio", label: "Allio", hint: "Send the request to an Allio agent", missing: "Set ALLIO_* env vars to enable" },
+] as const;
+
 const SUGGESTIONS = [
   "Make the living room feel cozier",
   "Add a reading corner at the pin",
@@ -15,7 +21,7 @@ const SUGGESTIONS = [
   "Add a desk with a chair in the bedroom",
 ];
 
-export function ChatPanel({ allioAvailable }: { allioAvailable: boolean }) {
+export function ChatPanel({ available }: { available: { openrouter: boolean; claude: boolean; allio: boolean } }) {
   const messages = useEditor((s) => s.messages);
   const selection = useEditor((s) => s.selection);
   const pin = useEditor((s) => s.pin);
@@ -83,15 +89,15 @@ export function ChatPanel({ allioAvailable }: { allioAvailable: boolean }) {
         </div>
         <div className="flex-1 text-sm font-medium">Design assistant</div>
         <div className="flex rounded-full bg-white/5 p-0.5 text-[11px]">
-          {(["openrouter", "allio"] as const).map((p) => (
+          {PROVIDERS.map((p) => (
             <button
-              key={p}
-              disabled={p === "allio" && !allioAvailable}
-              title={p === "allio" && !allioAvailable ? "Set ALLIO_* env vars to enable" : undefined}
-              onClick={() => setProvider(p)}
-              className={`rounded-full px-2.5 py-1 transition disabled:opacity-30 ${provider === p ? "bg-white/15 text-white" : "text-white/50 hover:text-white"}`}
+              key={p.id}
+              disabled={!available[p.id]}
+              title={available[p.id] ? p.hint : p.missing}
+              onClick={() => setProvider(p.id)}
+              className={`rounded-full px-2.5 py-1 transition disabled:opacity-30 ${provider === p.id ? "bg-white/15 text-white" : "text-white/50 hover:text-white"}`}
             >
-              {p === "openrouter" ? "OpenRouter" : "Allio"}
+              {p.label}
             </button>
           ))}
         </div>

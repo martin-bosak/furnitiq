@@ -12,10 +12,23 @@ export async function GET(_: Request, { params }: Ctx) {
   return NextResponse.json({ ...project, renders: await repo.listRenders(id) });
 }
 
+/**
+ * Save a scene. Unless `force` is set, `baseUpdatedAt` must match the stored
+ * version; if the project has changed since
+ * (another tab, the chat agent, an import), respond 409 with the current
+ * version instead of overwriting it.
+ */
 export async function PUT(req: Request, { params }: Ctx) {
   const { id } = await params;
-  const { scene } = await req.json();
-  return NextResponse.json(await getRepo().saveProject(id, parseScene(scene)));
+  const { scene, baseUpdatedAt, force } = await req.json();
+  const repo = getRepo();
+  if (!force) {
+    const current = await repo.getProject(id);
+    if (current && current.updatedAt !== baseUpdatedAt) {
+      return NextResponse.json({ error: "conflict", project: current }, { status: 409 });
+    }
+  }
+  return NextResponse.json(await repo.saveProject(id, parseScene(scene)));
 }
 
 export async function DELETE(_: Request, { params }: Ctx) {
