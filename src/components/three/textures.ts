@@ -53,19 +53,27 @@ export function floorTexture(kind: string): THREE.Texture {
       g.fillRect(0, r * ph, S, 1.5);
     }
   } else if (kind === "tile") {
-    metersPerTile = 1.2; // 4 × 30 cm tiles
-    const n = 4;
+    metersPerTile = 1.2; // 3 × 40 cm beige stone-look tiles (laid diagonally, see rotation below)
+    const n = 3;
     const t = S / n;
     for (let i = 0; i < n; i++)
       for (let j = 0; j < n; j++) {
-        const v = (rnd() - 0.5) * 10;
-        g.fillStyle = `rgb(${226 + v},${228 + v},${230 + v})`;
+        const v = (rnd() - 0.5) * 14;
+        g.fillStyle = `rgb(${196 + v},${184 + v},${168 + v})`;
         g.fillRect(i * t, j * t, t, t);
+        // mottled stone look
+        for (let k = 0; k < 900; k++) {
+          g.fillStyle = `rgba(${rnd() > 0.5 ? "255,250,240" : "90,80,70"},${0.05 + rnd() * 0.08})`;
+          const r = 2 + rnd() * 9;
+          g.beginPath();
+          g.arc(i * t + rnd() * t, j * t + rnd() * t, r, 0, Math.PI * 2);
+          g.fill();
+        }
       }
-    g.fillStyle = "#b9bcc0";
+    g.fillStyle = "#8f877c";
     for (let i = 0; i <= n; i++) {
-      g.fillRect(i * t - 3, 0, 6, S);
-      g.fillRect(0, i * t - 3, S, 6);
+      g.fillRect(i * t - 2, 0, 4, S);
+      g.fillRect(0, i * t - 2, S, 4);
     }
   } else if (kind === "carpet") {
     g.fillStyle = "#b9b2a6";
@@ -94,6 +102,7 @@ export function floorTexture(kind: string): THREE.Texture {
   const tex = new THREE.CanvasTexture(c);
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
   tex.repeat.set(1 / metersPerTile, 1 / metersPerTile);
+  if (kind === "tile") tex.rotation = Math.PI / 4;
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.anisotropy = 8;
   cache.set(kind, tex);

@@ -1,12 +1,14 @@
 "use client";
 
-import { Download, Palette, Plus, Video, X } from "lucide-react";
+import { Aperture, Check, Download, Palette, Plus, Sun, Video, X } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import dynamic from "next/dynamic";
 import { useState } from "react";
 import { sceneBounds } from "@/lib/scene/ops";
 import { activeCamera, useEditor, type Render } from "@/store/editor";
 import { viewportApi } from "./three/api";
+
+const MAX_SAMPLES = 600;
 
 const Viewport3D = dynamic(() => import("./three/Viewport3D").then((m) => m.Viewport3D), {
   ssr: false,
@@ -27,9 +29,28 @@ export function CameraPanel() {
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState<Render | null>(null);
   const [styleOpen, setStyleOpen] = useState(false);
+  const photoMode = useEditor((s) => s.photoMode);
+  const samples = useEditor((s) => s.photoSamples);
+  const exposure = useEditor((s) => s.exposure);
+  const [saved, setSaved] = useState(false);
+
+  const savePhoto = async () => {
+    const image = await viewportApi.capture?.();
+    if (!image || !cam) return;
+    const res = await fetch("/api/renders", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ projectId, image, cameraName: cam.name, prompt: `Path traced · ${samples} samples` }),
+    });
+    if (!res.ok) return setError("Could not save the photo");
+    const row = await res.json();
+    addRender(row);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  };
 
   const shoot = async () => {
-    const image = viewportApi.capture?.();
+    const image = await viewportApi.capture?.();
     if (!image || !cam) return;
     setBusy(true);
     setError(null);
@@ -103,7 +124,7 @@ export function CameraPanel() {
         </div>
       )}
 
-      <div className="pointer-events-none absolute bottom-24 left-1/2 -translate-x-1/2 text-[11px] tracking-wide whitespace-nowrap text-white/35">
+      <div className={`pointer-events-none absolute bottom-24 left-1/2 -translate-x-1/2 text-[11px] tracking-wide whitespace-nowrap text-white/35 ${photoMode ? "hidden" : ""}`}>
         drag to look · scroll to move · WASD walk · Q/E height
       </div>
 
@@ -146,8 +167,40 @@ export function CameraPanel() {
             {busy ? "…" : "SHOT"}
           </span>
         </button>
-        <div className="w-11" />
+        <button
+          onClick={() => useEditor.getState().setPhotoMode(!photoMode)}
+          className={`glass grid h-11 w-11 place-items-center rounded-full transition ${photoMode ? "!border-amber-200/50 text-amber-100 shadow-[0_0_24px_rgb(255_200_120/0.35)]" : "text-white/70 hover:text-white"}`}
+          title={photoMode ? "Exit photo mode" : "Photo mode — physically based path tracing"}
+        >
+          <Aperture size={18} />
+        </button>
       </div>
+
+      {/* Photo mode HUD */}
+      <AnimatePresence>
+        {photoMode && (
+          <motion.div
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 8 }}
+            className="glass-strong absolute bottom-24 left-1/2 flex -translate-x-1/2 items-center gap-3 rounded-full py-1.5 pr-1.5 pl-4 text-[11px] text-white/70"
+          >
+            <span className="flex items-center gap-2 font-mono whitespace-nowrap">
+              <span className="relative h-1.5 w-20 overflow-hidden rounded-full bg-white/10">
+                <span className="absolute inset-y-0 left-0 rounded-full bg-gradient-to-r from-amber-200 to-cyan-200" style={{ width: `${Math.min(100, (samples / MAX_SAMPLES) * 100)}%` }} />
+              </span>
+              {samples >= MAX_SAMPLES ? "done" : samples < 1 ? "preparing…" : `${samples} spp`}
+            </span>
+            <span className="flex items-center gap-1.5">
+              <Sun size={12} />
+              <input type="range" min={0.4} max={2.5} step={0.05} value={exposure} onChange={(e) => useEditor.getState().setExposure(+e.target.value)} className="w-20 accent-amber-200" />
+            </span>
+            <button onClick={savePhoto} disabled={samples < 16} className="btn !h-7 !px-3 !text-[11px]">
+              {saved ? <Check size={12} /> : <Download size={12} />} {saved ? "Saved" : "Save photo"}
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Busy veil */}
       <AnimatePresence>

@@ -1,6 +1,6 @@
 "use client";
 
-import { Environment, Lightformer } from "@react-three/drei";
+import { Environment } from "@react-three/drei";
 import { Canvas, useFrame, useThree, type ThreeEvent } from "@react-three/fiber";
 import { useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
@@ -9,7 +9,11 @@ import type { Furniture, Opening, Room, Wall } from "@/lib/scene/schema";
 import { activeCamera, useEditor } from "@/store/editor";
 import { viewportApi } from "./api";
 import { FurnitureModel } from "./FurnitureModel";
-import { floorTexture } from "./textures";
+import { floorMaterial, material } from "./materials";
+import { PathTracer } from "./PathTracer";
+import { PostFX } from "./PostFX";
+
+const HDRI = "/assets/hdri/autumn_park_1k.hdr";
 
 
 const rad = (d: number) => (d * Math.PI) / 180;
@@ -20,15 +24,16 @@ export function Viewport3D() {
   return (
     <div ref={wrap} tabIndex={0} className="h-full w-full cursor-grab outline-none active:cursor-grabbing">
       <Canvas
-        shadows="soft"
+        shadows
         dpr={[1, 2]}
-        gl={{ preserveDrawingBuffer: true, antialias: true, toneMapping: THREE.ACESFilmicToneMapping, toneMappingExposure: 1.05 }}
+        gl={{ preserveDrawingBuffer: true, antialias: false, toneMapping: THREE.AgXToneMapping }}
         camera={{ fov: 65, near: 0.05, far: 200, position: [3, 1.6, 4] }}
       >
-        <color attach="background" args={["#d6e6f3"]} />
         <SceneContents />
         <CameraRig />
+        <Exposure />
         <CaptureBridge />
+        <Rendering />
       </Canvas>
     </div>
   );
@@ -45,16 +50,15 @@ function SceneContents() {
 
   return (
     <>
-      <hemisphereLight args={["#fff6ea", "#6b5a48", 0.55]} />
-      <ambientLight intensity={0.18} />
       <directionalLight
         position={[cx + 7, 9, cy - 9]}
-        intensity={3.2}
+        intensity={4.5}
         color="#fff1dc"
         castShadow
-        shadow-mapSize={[2048, 2048]}
-        shadow-bias={-0.0004}
-        shadow-normalBias={0.03}
+        shadow-mapSize={[4096, 4096]}
+        shadow-radius={6}
+        shadow-bias={-0.0003}
+        shadow-normalBias={0.025}
         shadow-camera-left={-span}
         shadow-camera-right={span}
         shadow-camera-top={span}
@@ -66,20 +70,11 @@ function SceneContents() {
       </directionalLight>
       {scene.rooms.map((r) => {
         const [x, y] = centroid(r);
-        return <pointLight key={r.id} position={[x, wallH - 0.35, y]} intensity={2.2} distance={7} decay={2} color="#ffe7c7" />;
+        return <pointLight key={r.id} position={[x, wallH - 0.35, y]} intensity={1.2} distance={7} decay={2} color="#ffe7c7" />;
       })}
 
-      <Environment resolution={256} frames={1}>
-        <Lightformer form="rect" intensity={2.2} color="#fff4e6" position={[0, 5, -6]} scale={[12, 4, 1]} />
-        <Lightformer form="rect" intensity={1.2} color="#dfefff" position={[6, 3, 0]} rotation-y={-Math.PI / 2} scale={[10, 3, 1]} />
-        <Lightformer form="circle" intensity={1.5} color="#ffffff" position={[0, 8, 0]} rotation-x={Math.PI / 2} scale={6} />
-      </Environment>
-
-      {/* Ground outside the apartment */}
-      <mesh rotation-x={-Math.PI / 2} position={[cx, -0.01, cy]} receiveShadow>
-        <planeGeometry args={[span * 4, span * 4]} />
-        <meshStandardMaterial color="#b9c2a8" roughness={1} />
-      </mesh>
+      {/* Real outdoor light + the view through the windows (CC0 HDRI). The apartment is upstairs, so no ground plane. */}
+      <Environment files={HDRI} background />
 
       {scene.rooms.map((r) => (
         <RoomSurfaces key={r.id} room={r} height={wallH} />
@@ -123,15 +118,11 @@ function RoomSurfaces({ room, height }: { room: Room; height: number }) {
     const cs = new THREE.Shape(room.polygon.map(([x, y]) => new THREE.Vector2(x, y)));
     return [new THREE.ShapeGeometry(fs), new THREE.ShapeGeometry(cs)];
   }, [room.polygon]);
-  const tex = useMemo(() => floorTexture(room.floor), [room.floor]);
+  const mat = useMemo(() => floorMaterial(room.floor), [room.floor]);
   return (
     <>
-      <mesh geometry={floorGeo} rotation-x={-Math.PI / 2} receiveShadow>
-        <meshStandardMaterial map={tex} roughness={room.floor === "tile" ? 0.25 : 0.55} />
-      </mesh>
-      <mesh geometry={ceilGeo} rotation-x={Math.PI / 2} position-y={height} castShadow receiveShadow>
-        <meshStandardMaterial color="#f7f5f1" roughness={0.95} />
-      </mesh>
+      <mesh geometry={floorGeo} rotation-x={-Math.PI / 2} material={mat} receiveShadow />
+      <mesh geometry={ceilGeo} rotation-x={Math.PI / 2} position-y={height} material={material("plaster", "#f7f5f1", 3)} castShadow receiveShadow />
     </>
   );
 }
@@ -174,21 +165,19 @@ function WallMesh({ wall, openings, selected }: { wall: Wall; openings: Opening[
       }}
     >
       {pieces.map((p, i) => (
-        <mesh key={i} position={[p.x, p.y, 0]} castShadow receiveShadow>
+        <mesh key={i} position={[p.x, p.y, 0]} material={material("plaster", color, Math.max(p.w, p.h))} castShadow receiveShadow>
           <boxGeometry args={[p.w, p.h, t]} />
-          <meshStandardMaterial color={color} roughness={0.92} />
         </mesh>
       ))}
       {openings.map((o) => {
         const x = o.offset - L / 2;
-        const frame = "#e9e6e0";
+        const frame = "#a4552c";
         const ft = 0.05;
         if (o.kind === "window")
           return (
             <group key={o.id} position={[x, o.sill + o.height / 2, 0]}>
-              <mesh>
+              <mesh material={material("glass", "#ffffff")}>
                 <boxGeometry args={[o.width - ft, o.height - ft, 0.01]} />
-                <meshPhysicalMaterial color="#cfe8ff" transparent opacity={0.12} roughness={0.02} metalness={0} />
               </mesh>
               {[
                 [0, o.height / 2 - ft / 2, o.width, ft],
@@ -197,14 +186,12 @@ function WallMesh({ wall, openings, selected }: { wall: Wall; openings: Opening[
                 [o.width / 2 - ft / 2, 0, ft, o.height],
                 [0, 0, ft * 0.6, o.height],
               ].map(([fx, fy, fw, fh], i) => (
-                <mesh key={i} position={[fx, fy, 0]} castShadow>
+                <mesh key={i} position={[fx, fy, 0]} material={material("wood", frame)} castShadow>
                   <boxGeometry args={[fw, fh, t * 0.6]} />
-                  <meshStandardMaterial color={frame} roughness={0.5} />
                 </mesh>
               ))}
-              <mesh position={[0, -o.height / 2 - 0.015, t / 2 + 0.02]} castShadow receiveShadow>
+              <mesh position={[0, -o.height / 2 - 0.015, t / 2 + 0.02]} material={material("stone", "#e2ddd4")} castShadow receiveShadow>
                 <boxGeometry args={[o.width + 0.1, 0.03, 0.06]} />
-                <meshStandardMaterial color={frame} roughness={0.5} />
               </mesh>
             </group>
           );
@@ -215,9 +202,8 @@ function WallMesh({ wall, openings, selected }: { wall: Wall; openings: Opening[
               [o.width / 2 + 0.02, o.height / 2, 0.04, o.height],
               [0, o.height + 0.02, o.width + 0.08, 0.04],
             ].map(([fx, fy, fw, fh], i) => (
-              <mesh key={i} position={[fx, fy, 0]} castShadow>
+              <mesh key={i} position={[fx, fy, 0]} material={material("wood", frame)} castShadow>
                 <boxGeometry args={[fw, fh, t + 0.02]} />
-                <meshStandardMaterial color={frame} roughness={0.5} />
               </mesh>
             ))}
           </group>
@@ -252,25 +238,42 @@ function CameraRig() {
 }
 
 function CaptureBridge() {
-  const { gl, scene, camera } = useThree();
+  const { gl } = useThree();
   useEffect(() => {
-    viewportApi.capture = () => {
-      const hidden: THREE.Object3D[] = [];
-      scene.traverse((o) => {
-        if (o.userData.helper && o.visible) {
-          o.visible = false;
-          hidden.push(o);
-        }
-      });
-      gl.render(scene, camera);
-      const url = gl.domElement.toDataURL("image/jpeg", 0.92);
-      hidden.forEach((o) => (o.visible = true));
-      return url;
+    viewportApi.capture = async () => {
+      // Hide the selection outline, wait two frames, then read the canvas as displayed
+      // (includes post effects, or the path-traced image in photo mode).
+      useEditor.getState().select(null);
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      return gl.domElement.toDataURL("image/jpeg", 0.92);
     };
     return () => {
       viewportApi.capture = null;
     };
-  }, [gl, scene, camera]);
+  }, [gl]);
+  return null;
+}
+
+/** Raster: ambient occlusion + tone mapping. Photo mode: progressive path tracing. */
+function Rendering() {
+  const photoMode = useEditor((s) => s.photoMode);
+  const { scene } = useThree();
+  useEffect(() => {
+    // Raster environment light ignores walls, so keep it low indoors; the path tracer occludes it physically.
+    scene.environmentIntensity = photoMode ? 1 : 0.45;
+  }, [photoMode, scene]);
+  if (photoMode) return <PathTracer />;
+  return <PostFX />;
+}
+
+function Exposure() {
+  const exposure = useEditor((s) => s.exposure);
+  const photoMode = useEditor((s) => s.photoMode);
+  const { gl } = useThree();
+  useEffect(() => {
+    // Indoor daylight is dim relative to the sky; the path-traced image needs more exposure.
+    gl.toneMappingExposure = exposure * (photoMode ? 1.25 : 1);
+  }, [gl, exposure, photoMode]);
   return null;
 }
 

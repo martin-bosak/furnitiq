@@ -1,36 +1,46 @@
 "use client";
 
 import { RoundedBox } from "@react-three/drei";
-import { useMemo } from "react";
+import { createContext, useContext, useMemo } from "react";
 import * as THREE from "three";
 import type { Furniture } from "@/lib/scene/schema";
+import { material, type MatKind } from "./materials";
 
 type V3 = [number, number, number];
 
+type Kind = { kind: MatKind };
+const KindCtx = createContext<Kind>({ kind: "wood" });
+
+/** Resolves a part's PBR material: explicit kind, else metal if metallic, else the furniture's default. */
+function useMat(c: string, k: MatKind | undefined, m: number, r: number | undefined, scale: number) {
+  const ctx = useContext(KindCtx);
+  const kind = k ?? (m >= 0.5 ? "metal" : ctx.kind);
+  return material(kind, c, scale, kind === "metal" || kind === "plastic" ? r : undefined);
+}
+
 /** Box centered at p with size s. */
-function B({ p, s, c, r = 0.7, m = 0 }: { p: V3; s: V3; c: string; r?: number; m?: number }) {
+function B({ p, s, c, r, m = 0, k }: { p: V3; s: V3; c: string; r?: number; m?: number; k?: MatKind }) {
+  const mat = useMat(c, k, m, r, Math.max(...s));
   return (
-    <mesh position={p} castShadow receiveShadow>
+    <mesh position={p} material={mat} castShadow receiveShadow>
       <boxGeometry args={s} />
-      <meshStandardMaterial color={c} roughness={r} metalness={m} />
     </mesh>
   );
 }
 
 /** Soft rounded box (cushions, mattresses). */
-function R({ p, s, c, rad = 0.04, r = 0.9 }: { p: V3; s: V3; c: string; rad?: number; r?: number }) {
+function R({ p, s, c, rad = 0.04, r, k }: { p: V3; s: V3; c: string; rad?: number; r?: number; k?: MatKind }) {
+  const mat = useMat(c, k, 0, r, Math.max(...s));
   return (
-    <RoundedBox args={s} position={p} radius={Math.min(rad, ...s.map((v) => v / 2 - 0.001))} smoothness={4} castShadow receiveShadow>
-      <meshStandardMaterial color={c} roughness={r} />
-    </RoundedBox>
+    <RoundedBox args={s} position={p} radius={Math.min(rad, ...s.map((v) => v / 2 - 0.001))} smoothness={4} material={mat} castShadow receiveShadow />
   );
 }
 
-function Cyl({ p, rt, rb, h, c, r = 0.6, m = 0, seg = 24 }: { p: V3; rt: number; rb: number; h: number; c: string; r?: number; m?: number; seg?: number }) {
+function Cyl({ p, rt, rb, h, c, r, m = 0, seg = 24, k }: { p: V3; rt: number; rb: number; h: number; c: string; r?: number; m?: number; seg?: number; k?: MatKind }) {
+  const mat = useMat(c, k, m, r, Math.max(rt * 2, h));
   return (
-    <mesh position={p} castShadow receiveShadow>
+    <mesh position={p} material={mat} castShadow receiveShadow>
       <cylinderGeometry args={[rt, rb, h, seg]} />
-      <meshStandardMaterial color={c} roughness={r} metalness={m} />
     </mesh>
   );
 }
@@ -40,7 +50,7 @@ function Legs({ w, d, h, c, inset = 0.05, t = 0.04 }: { w: number; d: number; h:
   const zs = [-d / 2 + inset + t / 2, d / 2 - inset - t / 2];
   return (
     <>
-      {xs.flatMap((x) => zs.map((z) => <B key={`${x}${z}`} p={[x, h / 2, z]} s={[t, h, t]} c={c} r={0.5} />))}
+      {xs.flatMap((x) => zs.map((z) => <B key={`${x}${z}`} p={[x, h / 2, z]} s={[t, h, t]} c={c} k="wood" />))}
     </>
   );
 }
@@ -126,7 +136,7 @@ export function FurnitureModel({ f }: { f: Furniture }) {
       case "office_chair":
         return (
           <>
-            <Cyl p={[0, 0.04, 0]} rt={w / 2.2} rb={w / 2.2} h={0.03} c="#1a1a1d" seg={5} />
+            <Cyl p={[0, 0.04, 0]} rt={w / 2.2} rb={w / 2.2} h={0.03} c="#1a1a1d" seg={5} k="plastic" />
             <Cyl p={[0, 0.25, 0]} rt={0.025} rb={0.025} h={0.4} c="#888" m={0.9} r={0.25} />
             <R p={[0, 0.48, 0]} s={[w * 0.85, 0.08, d * 0.85]} c={c} rad={0.04} />
             <R p={[0, 0.85, -d / 2 + 0.08]} s={[w * 0.8, h - 0.6, 0.07]} c={c} rad={0.04} />
@@ -145,10 +155,9 @@ export function FurnitureModel({ f }: { f: Furniture }) {
       case "tv":
         return (
           <>
-            <B p={[0, h / 2, 0]} s={[w, h, Math.min(d, 0.05)]} c="#0d0d10" r={0.3} m={0.4} />
-            <mesh position={[0, h / 2, Math.min(d, 0.05) / 2 + 0.001]}>
+            <B p={[0, h / 2, 0]} s={[w, h, Math.min(d, 0.05)]} c="#0d0d10" r={0.3} k="plastic" />
+            <mesh position={[0, h / 2, Math.min(d, 0.05) / 2 + 0.001]} material={material("screen", "#05070c")}>
               <planeGeometry args={[w - 0.03, h - 0.03]} />
-              <meshStandardMaterial color="#05070c" roughness={0.08} metalness={0.6} emissive="#0b1424" emissiveIntensity={0.6} />
             </mesh>
           </>
         );
@@ -172,7 +181,7 @@ export function FurnitureModel({ f }: { f: Furniture }) {
                 const bw = 0.025 + rnd(i) * 0.035;
                 const bh = 0.2 + rnd(i + 7) * 0.1;
                 if (rnd(i + 3) > 0.15)
-                  out.push(<B key={i} p={[x + bw / 2, (row * (h - 0.02)) / n + 0.02 + bh / 2, 0.01]} s={[bw, bh, d * 0.75]} c={books[Math.floor(rnd(i + 5) * books.length)]} r={0.8} />);
+                  out.push(<B key={i} p={[x + bw / 2, (row * (h - 0.02)) / n + 0.02 + bh / 2, 0.01]} s={[bw, bh, d * 0.75]} c={books[Math.floor(rnd(i + 5) * books.length)]} k="matte" />);
                 x += bw + 0.003;
               }
               return out;
@@ -200,13 +209,13 @@ export function FurnitureModel({ f }: { f: Furniture }) {
         const units = Math.max(2, Math.round(w / 0.6));
         return (
           <>
-            <B p={[0, 0.05, -0.03]} s={[w, 0.1, d - 0.08]} c="#1d1d20" />
+            <B p={[0, 0.05, -0.03]} s={[w, 0.1, d - 0.08]} c="#1d1d20" k="plastic" />
             <B p={[0, 0.1 + (h - 0.14) / 2, -0.01]} s={[w, h - 0.14, d - 0.02]} c={c} r={0.4} />
             {Array.from({ length: units }, (_, i) => (
               <B key={i} p={[-w / 2 + ((i + 0.5) * w) / units, h - 0.12, d / 2 - 0.01]} s={[0.25, 0.012, 0.02]} c="#999" m={0.9} r={0.3} />
             ))}
-            <B p={[0, h - 0.02, 0]} s={[w + 0.02, 0.04, d]} c="#2c2b2a" r={0.25} />
-            <B p={[w * 0.22, h + 0.001, 0]} s={[0.58, 0.004, 0.5]} c="#0a0a0b" r={0.1} m={0.3} />
+            <B p={[0, h - 0.02, 0]} s={[w + 0.02, 0.04, d]} c="#c4c7c2" k="stone" />
+            <B p={[w * 0.22, h + 0.001, 0]} s={[0.58, 0.004, 0.5]} c="#0a0a0b" k="screen" />
             <B p={[-w * 0.22, h - 0.04, 0]} s={[0.5, 0.06, 0.4]} c="#9aa0a6" m={0.9} r={0.25} />
             <Cyl p={[-w * 0.22, h + 0.12, -d / 2 + 0.1]} rt={0.012} rb={0.015} h={0.25} c="#c0c4c8" m={1} r={0.2} />
           </>
@@ -240,7 +249,7 @@ export function FurnitureModel({ f }: { f: Furniture }) {
       case "sink":
         return (
           <>
-            <B p={[0, (h - 0.15) / 2 + 0.1, -0.01]} s={[w, h - 0.15, d - 0.02]} c="#b48a60" r={0.5} />
+            <B p={[0, (h - 0.15) / 2 + 0.1, -0.01]} s={[w, h - 0.15, d - 0.02]} c="#b48a60" k="wood" />
             <R p={[0, h - 0.06, 0]} s={[w, 0.12, d]} c={c} rad={0.03} r={0.12} />
             <Cyl p={[0, h + 0.08, -d / 2 + 0.06]} rt={0.012} rb={0.015} h={0.16} c="#c0c4c8" m={1} r={0.2} />
             <mesh position={[0, h * 1.6, -d / 2 + 0.01]}>
@@ -253,16 +262,15 @@ export function FurnitureModel({ f }: { f: Furniture }) {
         const potH = Math.min(0.4, h * 0.3);
         return (
           <>
-            <Cyl p={[0, potH / 2, 0]} rt={w * 0.32} rb={w * 0.24} h={potH} c="#d9cbb8" r={0.8} />
+            <Cyl p={[0, potH / 2, 0]} rt={w * 0.32} rb={w * 0.24} h={potH} c="#d9cbb8" k="matte" />
             {[
               [0, 0.55, 0, 0.32],
               [0.12, 0.72, 0.05, 0.26],
               [-0.1, 0.8, -0.06, 0.24],
               [0.03, 0.95, 0.02, 0.2],
             ].map(([x, y, z, s], i) => (
-              <mesh key={i} position={[x * w * 2, potH + (y as number) * (h - potH) * 0.8, z * d * 2]} castShadow>
+              <mesh key={i} position={[x * w * 2, potH + (y as number) * (h - potH) * 0.8, z * d * 2]} material={material("foliage", i % 2 ? c : shade(c, 1.2))} castShadow>
                 <icosahedronGeometry args={[(s as number) * w * 1.1, 1]} />
-                <meshStandardMaterial color={i % 2 ? c : shade(c, 1.2)} roughness={0.85} flatShading />
               </mesh>
             ))}
           </>
@@ -285,5 +293,29 @@ export function FurnitureModel({ f }: { f: Furniture }) {
     }
   }, [f.type, w, d, h, c, dark]);
 
-  return <>{parts}</>;
+  return <KindCtx.Provider value={{ kind: defaultKind(f.type) }}>{parts}</KindCtx.Provider>;
+}
+
+function defaultKind(type: string): MatKind {
+  switch (type) {
+    case "sofa":
+    case "armchair":
+    case "bed":
+    case "rug":
+    case "office_chair":
+      return "fabric";
+    case "fridge":
+    case "floor_lamp":
+      return "metal";
+    case "bathtub":
+    case "toilet":
+    case "sink":
+      return "ceramic";
+    case "tv":
+      return "plastic";
+    case "plant":
+      return "foliage";
+    default:
+      return "wood";
+  }
 }

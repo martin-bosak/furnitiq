@@ -35,6 +35,10 @@ type EditorState = {
   renders: Render[];
   provider: AiProvider;
   allioAgent: string;
+  /** Path-traced photo mode in the 3D view. */
+  photoMode: boolean;
+  photoSamples: number;
+  exposure: number;
 
   load: (projectId: string | null, scene: Scene, renders?: Render[], updatedAt?: string | null) => void;
   /** Undoable change. */
@@ -55,6 +59,9 @@ type EditorState = {
   markSaved: (updatedAt: string) => void;
   setProvider: (p: AiProvider) => void;
   setAllioAgent: (a: string) => void;
+  setPhotoMode: (v: boolean) => void;
+  setPhotoSamples: (n: number) => void;
+  setExposure: (v: number) => void;
 };
 
 const HISTORY = 100;
@@ -73,6 +80,9 @@ export const useEditor = create<EditorState>((set, get) => ({
   renders: [],
   provider: "openrouter",
   allioAgent: "",
+  photoMode: false,
+  photoSamples: 0,
+  exposure: 1,
 
   load: (projectId, scene, renders = [], updatedAt = null) =>
     set({ projectId, scene, renders, updatedAt, past: [], future: [], dirty: false, saving: false, selection: null, pin: null }),
@@ -115,6 +125,9 @@ export const useEditor = create<EditorState>((set, get) => ({
   markSaved: (updatedAt) => set({ dirty: false, saving: false, updatedAt }),
   setProvider: (provider) => set({ provider }),
   setAllioAgent: (allioAgent) => set({ allioAgent }),
+  setPhotoMode: (photoMode) => set({ photoMode, photoSamples: 0 }),
+  setPhotoSamples: (photoSamples) => set({ photoSamples }),
+  setExposure: (exposure) => set({ exposure }),
 }));
 
 export function activeCamera(scene: Scene) {

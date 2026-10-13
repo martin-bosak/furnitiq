@@ -17,6 +17,7 @@
     "drizzle-orm": "^0.45.4",
     "lucide-react": "^1.56.0",
     "motion": "^14.2.0",
+    "n8ao": "^2.0.1",
     "nanoid": "^6.0.2",
     "next": "^16.4.0",
     "openai": "^7.32.0",
@@ -25,6 +26,9 @@
     "react-dom": "^19.3.0",
     "server-only": "^0.0.1",
     "three": "^0.186.1",
+    "three-gpu-pathtracer": "^0.0.27",
+    "three-mesh-bvh": "^0.9.16",
+    "xatlas-web": "^0.1.0",
     "zod": "^4.6.7",
     "zustand": "^5.0.15"
   },
@@ -40,5 +44,8 @@
   },
   "engines": {
     "node": ">=22"
+  },
+  "overrides": {
+    "three-mesh-bvh": "^0.9.16"
   }
 }
