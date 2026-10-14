@@ -266,6 +266,7 @@ function LibraryGrid({ assets, empty, onAdd, onNew }: { assets: LibraryAsset[]; 
                 <div className="font-mono text-[10px] text-white/35">{a.size.map((v) => Math.round(v * 100)).join("×")} cm</div>
               </div>
             </button>
+            {ready && a.warning && <RetakeNote asset={a} />}
             <div className="absolute top-1 right-1 flex gap-1 opacity-0 transition group-hover:opacity-100">
               {a.status === "failed" && (
                 <button
@@ -286,6 +287,37 @@ function LibraryGrid({ assets, empty, onAdd, onNew }: { assets: LibraryAsset[]; 
           </div>
         );
       })}
+    </div>
+  );
+}
+
+/** Doubtful model: explain and let the user replace the photo (regenerates in place, plan links stay). */
+function RetakeNote({ asset }: { asset: LibraryAsset }) {
+  const [busy, setBusy] = useState(false);
+  return (
+    <div className="border-t border-amber-300/15 bg-amber-300/[0.07] px-2 py-1.5">
+      <div className="flex items-start gap-1 text-[10px] leading-snug text-amber-100/85" title={asset.warning}>
+        <AlertTriangle size={11} className="mt-px shrink-0" />
+        <span className="line-clamp-2">{asset.warning}</span>
+      </div>
+      <label className="mt-1 flex cursor-pointer items-center justify-center gap-1 rounded-full bg-amber-200/90 py-0.5 text-[10px] font-medium text-[#07080c]">
+        {busy ? <Loader2 size={10} className="animate-spin" /> : <RotateCw size={10} />} Retake photo
+        <input
+          type="file"
+          accept="image/*"
+          hidden
+          onChange={async (e) => {
+            const f = e.target.files?.[0];
+            if (!f) return;
+            setBusy(true);
+            const form = new FormData();
+            form.append("photos", f);
+            const res = await fetch(`/api/library/${asset.id}/retake`, { method: "POST", body: form });
+            if (res.ok) useLibrary.getState().upsert(await res.json());
+            setBusy(false);
+          }}
+        />
+      </label>
     </div>
   );
 }

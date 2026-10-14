@@ -112,6 +112,13 @@ Respond with ONLY JSON: {"items": [...]}`;
     const width = Math.min(file.w - left, Math.ceil((x1 - x0 + 2 * padX) * file.w));
     const height = Math.min(file.h - top, Math.ceil((y1 - y0 + 2 * padY) * file.h));
     const crop = await sharp(file.full).extract({ left, top, width, height }).jpeg({ quality: 95 }).toBuffer();
+    // The piece's box inside the crop (tells the segmenter which object we mean).
+    const inner: [number, number, number, number] = [
+      Math.max(0, (x0 * file.w - left) / width),
+      Math.max(0, (y0 * file.h - top) / height),
+      Math.min(1, (x1 * file.w - left) / width),
+      Math.min(1, (y1 * file.h - top) / height),
+    ];
 
     const ids = (it.sceneIds ?? []).filter((x) => sceneIds.has(x));
     const first = scene.furniture.find((f) => f.id === ids[0]);
@@ -123,7 +130,7 @@ Respond with ONLY JSON: {"items": [...]}`;
       size,
       color: first?.color,
       photos: [{ data: crop, ext: "jpg" }],
-      source: { kind: "apartment", projectId, note: `${it.quality}${it.note ? ` · ${it.note}` : ""} · from ${it.photo}` },
+      source: { kind: "apartment", projectId, box: inner, note: `${it.quality}${it.note ? ` · ${it.note}` : ""} · from ${it.photo}` },
     });
     result.items.push({ ...it, sceneIds: ids, category, assetId: asset.id });
   }

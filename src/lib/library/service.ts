@@ -70,6 +70,9 @@ export async function syncAsset(asset: LibraryAsset): Promise<LibraryAsset> {
         form.append("images", new Blob([new Uint8Array(data)]), path.basename(url));
       }
       form.append("size", JSON.stringify(asset.size));
+      if (asset.source.box) form.append("box", JSON.stringify(asset.source.box));
+      // Product photos are shot with a level camera; room and hand-held photos need tilt removal.
+      form.append("upright", asset.source.kind === "url" ? "0" : "1");
       form.append("name", asset.name);
       if (asset.color) form.append("color", asset.color);
       const res = await fetch(`${GEN_URL}/jobs`, { method: "POST", body: form, signal: AbortSignal.timeout(15000) });
@@ -80,7 +83,15 @@ export async function syncAsset(asset: LibraryAsset): Promise<LibraryAsset> {
 
     const res = await fetch(`${GEN_URL}/jobs/${asset.jobId}`, { signal: AbortSignal.timeout(5000), cache: "no-store" });
     if (res.status === 404) return await save({ jobId: undefined, status: "queued", stage: "Generator restarted, resubmitting" });
-    const job = (await res.json()) as { status: string; stage?: string; progress?: number; error?: string; generator?: string };
+    const job = (await res.json()) as {
+      status: string;
+      stage?: string;
+      progress?: number;
+      error?: string;
+      generator?: string;
+      warning?: string | null;
+      stats?: LibraryAsset["stats"];
+    };
     if (job.status === "failed") return await save({ status: "failed", error: job.error ?? "Generation failed", stage: undefined });
     if (job.status !== "done") return await save({ status: "processing", stage: job.stage, progress: job.progress });
 
@@ -88,9 +99,23 @@ export async function syncAsset(asset: LibraryAsset): Promise<LibraryAsset> {
       fetch(`${GEN_URL}/jobs/${asset.jobId}/model.glb`).then((r) => r.arrayBuffer()),
       fetch(`${GEN_URL}/jobs/${asset.jobId}/thumbnail.png`).then((r) => (r.ok ? r.arrayBuffer() : null)),
     ]);
-    const modelUrl = await saveFile(folder(asset.id), Buffer.from(model), "glb", "model.glb");
-    const thumbUrl = thumb ? await saveFile(folder(asset.id), Buffer.from(thumb), "png", "thumbnail.png") : asset.thumbnail;
-    return await save({ status: "ready", model: modelUrl, thumbnail: thumbUrl, stage: undefined, progress: 1, generator: job.generator });
+    // Versioned names: files are served as immutable, and regenerated models must not hit a stale cache.
+    const v = Date.now().toString(36);
+    const modelUrl = await saveFile(folder(asset.id), Buffer.from(model), "glb", `model-${v}.glb`);
+    const thumbUrl = thumb ? await saveFile(folder(asset.id), Buffer.from(thumb), "png", `thumbnail-${v}.png`) : asset.thumbnail;
+    for (const old of [asset.model, asset.thumbnail]) {
+      if (old && old.includes(`/library/${asset.id}/`) && !asset.source.photos.includes(old)) await fs.rm(filePath(old), { force: true });
+    }
+    return await save({
+      status: "ready",
+      model: modelUrl,
+      thumbnail: thumbUrl,
+      stage: undefined,
+      progress: 1,
+      generator: job.generator,
+      warning: job.warning ?? undefined,
+      stats: job.stats,
+    });
   } catch (e) {
     const msg = (e as Error).message;
     // Generator offline: keep the asset queued; it is submitted on a later sync.
@@ -107,7 +132,7 @@ export async function syncAll() {
 export async function retryAsset(id: string) {
   const asset = await getRepo().getAsset(id);
   if (!asset) return null;
-  const reset: LibraryAsset = { ...asset, status: "queued", jobId: undefined, error: undefined, stage: "Waiting for the generator", updatedAt: new Date().toISOString() };
+  const reset: LibraryAsset = { ...asset, status: "queued", jobId: undefined, error: undefined, warning: undefined, stage: "Waiting for the generator", updatedAt: new Date().toISOString() };
   await getRepo().saveAsset(reset);
   return syncAsset(reset);
 }

@@ -58,6 +58,7 @@ work: "queue.Queue[str]" = queue.Queue()
 # ── models (lazy, kept on the GPU) ─────────────────────────────────────────
 _pipe = None
 _rembg = None
+_sam = None
 
 
 def shape_pipe():
@@ -80,12 +81,44 @@ def rembg_session():
     return _rembg
 
 
+def sam_session():
+    """Segment Anything (Apache-2.0): segments the object inside a box prompt."""
+    global _sam
+    if _sam is None:
+        from rembg import new_session
+
+        _sam = new_session("sam")
+    return _sam
+
+
 # ── pipeline steps ─────────────────────────────────────────────────────────
-def cutout(path: str) -> Image.Image:
-    """RGBA with only the largest connected object (drops bins, plants next to it)."""
+def cutout(path: str, box: list[float] | None = None) -> Image.Image:
+    """RGBA of the furniture piece only.
+
+    With `box` ([x0, y0, x1, y1] as fractions, e.g. from the room scan) SAM segments exactly that object;
+    otherwise salient-object removal, retried with SAM on the central area when the result is implausibly small.
+    Only the largest connected part is kept (drops bins, plants next to it).
+    """
     from rembg import remove
 
-    rgba = np.array(remove(Image.open(path).convert("RGB"), session=rembg_session()))
+    src = Image.open(path).convert("RGB")
+    W, H = src.size
+
+    def sam(b):
+        x0, y0, x1, y1 = b[0] * W, b[1] * H, b[2] * W, b[3] * H
+        prompt = [{"type": "rectangle", "label": 1, "data": [x0, y0, x1, y1]}, {"type": "point", "label": 1, "data": [(x0 + x1) / 2, (y0 + y1) / 2]}]
+        return np.array(remove(src, session=sam_session(), sam_prompt=prompt))
+
+    if box:
+        rgba = sam(box)
+    else:
+        rgba = np.array(remove(src, session=rembg_session()))
+        fg = rgba[..., 3] > 110
+        ys_, xs_ = np.nonzero(fg)
+        too_small = fg.mean() < 0.12 or not len(xs_) or (xs_.max() - xs_.min()) < 0.3 * W or (ys_.max() - ys_.min()) < 0.3 * H
+        if too_small:
+            print("salient cutout looks wrong, retrying with SAM", flush=True)
+            rgba = sam([0.06, 0.06, 0.94, 0.94])
     # Hard mask: soft mattes on dark objects fail TripoSG's alpha check (it then falls back to RMBG).
     rgba[..., 3] = np.where(rgba[..., 3] > 110, 255, 0).astype(np.uint8)
     alpha = rgba[..., 3] > 127
@@ -201,6 +234,50 @@ def bake_texture(mesh: trimesh.Trimesh, rgba: Image.Image):
     return verts, faces, uvs, Image.fromarray(tex), coverage
 
 
+def _rot(pitch: float, roll: float, yaw: float) -> np.ndarray:
+    cx, sx = np.cos(pitch), np.sin(pitch)
+    cz, sz = np.cos(roll), np.sin(roll)
+    cy, sy = np.cos(yaw), np.sin(yaw)
+    rx = np.array([[1, 0, 0], [0, cx, -sx], [0, sx, cx]])
+    rz = np.array([[cz, -sz, 0], [sz, cz, 0], [0, 0, 1]])
+    ry = np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]])
+    return ry @ rz @ rx
+
+
+def upright(verts: np.ndarray) -> np.ndarray:
+    """Rotation that removes camera tilt: furniture is boxy, so the tightest axis-aligned
+    bounding box over small pitch/roll/yaw angles puts it square to floor and walls."""
+    rng = np.random.default_rng(0)
+    pts = verts[rng.choice(len(verts), min(6000, len(verts)), replace=False)] - verts.mean(0)
+
+    def volume(r):
+        q = pts @ r.T
+        return float(np.prod(q.max(0) - q.min(0)))
+
+    start = volume(np.eye(3))
+    best, best_v = np.eye(3), start
+    deg = np.deg2rad
+    for pitch in np.arange(-40, 41, 4):
+        for roll in np.arange(-24, 25, 4):
+            for yaw in np.arange(-30, 31, 6):
+                r = _rot(deg(pitch), deg(roll), deg(yaw))
+                v = volume(r)
+                if v < best_v * 0.995:
+                    best, best_v = r, v
+    # Only straighten when it clearly helps (a level, non-boxy piece stays as generated).
+    return best if best_v < start * 0.92 else np.eye(3)
+
+
+def plausibility(verts: np.ndarray, size) -> float:
+    """Worst ratio between the model's proportions and the real ones (1 = perfect)."""
+    ext = verts.max(0) - verts.min(0)
+    model = np.array([ext[0], ext[2], ext[1]])  # width, depth, height
+    real = np.array(size, dtype=float)
+    a = model / model.max()
+    b = real / real.max()
+    return float(np.max(np.maximum(a / b, b / a)))
+
+
 def fit_and_export(verts, faces, uvs, tex: Image.Image, size, out_path: str):
     """Scale per axis to [width (X), height (Y), depth (Z)], bottom-center at the origin, export GLB."""
     w, d, h = size
@@ -225,7 +302,7 @@ def run_job(job_id: str):
 
     t0 = time.time()
     stage("Removing background", 0.05)
-    rgba = cutout(job["images"][0])
+    rgba = cutout(job["images"][0], job.get("box"))
     rgba_path = os.path.join(jdir, "cutout.png")
     rgba.save(rgba_path)
     thumb = rgba.copy()
@@ -239,11 +316,21 @@ def run_job(job_id: str):
     stage("Painting textures", 0.8)
     verts, faces, uvs, tex, coverage = bake_texture(mesh, rgba)
     tex.save(os.path.join(jdir, "texture.png"))
+    stage("Straightening", 0.9)
+    # Texture was baked in the camera frame; now remove the camera's tilt from the geometry.
+    r = upright(verts) if job.get("upright", True) else np.eye(3)
+    verts = (verts - verts.mean(0)) @ r.T
+    mismatch = plausibility(verts, job["size"])
     stage("Saving model", 0.95)
     fit_and_export(verts, faces, uvs, tex, job["size"], os.path.join(jdir, "model.glb"))
-    job.update(status="done", stage="Done", progress=1.0, generator=GENERATOR,
-               stats={"faces": int(len(faces)), "photo_coverage": round(coverage, 3), "seconds": round(time.time() - t0)})
-    print(f"[{job_id}] done in {time.time() - t0:.0f}s, {len(faces)} faces, photo covers {coverage:.0%}", flush=True)
+    warning = None
+    if mismatch > 2.2:
+        warning = "The shape doesn't match the real proportions, likely a partly hidden view. Retake one clear photo of the whole piece."
+    elif coverage < 0.05:
+        warning = "Very little of the piece was visible, so most of the texture is guessed. A clearer photo will look better."
+    job.update(status="done", stage="Done", progress=1.0, generator=GENERATOR, warning=warning,
+               stats={"faces": int(len(faces)), "photo_coverage": round(coverage, 3), "proportion_mismatch": round(mismatch, 2), "seconds": round(time.time() - t0)})
+    print(f"[{job_id}] done in {time.time() - t0:.0f}s, {len(faces)} faces, photo covers {coverage:.0%}, mismatch x{mismatch:.2f}", flush=True)
 
 
 def worker():
@@ -276,7 +363,7 @@ def health():
 
 
 @app.post("/jobs")
-async def create_job(images: list[UploadFile] = File(...), size: str = Form(...), name: str = Form("")):
+async def create_job(images: list[UploadFile] = File(...), size: str = Form(...), name: str = Form(""), box: str = Form(""), upright: str = Form("1")):
     sz = json.loads(size)
     if len(sz) != 3 or not all(0.005 < float(v) < 10 for v in sz):
         raise HTTPException(400, "size must be [width, depth, height] in meters")
@@ -289,7 +376,11 @@ async def create_job(images: list[UploadFile] = File(...), size: str = Form(...)
         with open(p, "wb") as fh:
             fh.write(await im.read())
         paths.append(p)
-    jobs[job_id] = {"id": job_id, "name": name, "size": [float(v) for v in sz], "images": paths, "status": "queued", "stage": "Queued on GPU", "progress": 0.0}
+    bx = json.loads(box) if box else None
+    if bx is not None and (len(bx) != 4 or not all(0 <= float(v) <= 1 for v in bx)):
+        raise HTTPException(400, "box must be [x0, y0, x1, y1] fractions")
+    jobs[job_id] = {"id": job_id, "name": name, "size": [float(v) for v in sz], "images": paths, "box": bx, "upright": upright != "0",
+                    "status": "queued", "stage": "Queued on GPU", "progress": 0.0}
     work.put(job_id)
     return {"id": job_id}
 

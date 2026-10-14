@@ -17,6 +17,9 @@ export type LibraryAsset = {
   stage?: string;
   progress?: number;
   error?: string;
+  /** Generated but doubtful (e.g. proportions don't match); suggests retaking a photo. */
+  warning?: string;
+  stats?: { faces?: number; photo_coverage?: number; proportion_mismatch?: number; seconds?: number };
   source: {
     kind: "photo" | "url" | "apartment";
     /** Product page or image links the asset was made from. */
@@ -25,6 +28,8 @@ export type LibraryAsset = {
     photos: string[];
     projectId?: string;
     note?: string;
+    /** Where the piece is inside the first photo ([x0, y0, x1, y1] fractions), for prompted segmentation. */
+    box?: [number, number, number, number];
   };
   /** Served URL of the generated GLB (textures embedded). */
   model?: string;
