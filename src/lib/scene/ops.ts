@@ -17,6 +17,7 @@ export type SceneOp =
       elevation?: number;
       size?: [number, number, number];
       color?: string;
+      assetId?: string;
       id?: string;
     }
   | {
@@ -91,6 +92,7 @@ export function applyOp(scene: Scene, op: SceneOp): Scene {
         elevation: op.elevation ?? item.elevation ?? 0,
         size: op.size ?? item.size,
         color: op.color ?? item.color,
+        ...(op.assetId && { assetId: op.assetId }),
       };
       return { ...scene, furniture: [...scene.furniture, f] };
     }

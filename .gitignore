@@ -6,3 +6,6 @@ next-env.d.ts
 .env.local
 /data/*
 !/data/.gitkeep
+
+# local generator
+gen/__pycache__/

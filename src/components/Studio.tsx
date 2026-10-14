@@ -6,6 +6,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { sampleScene } from "@/lib/scene/sample";
 import { parseScene, type Scene } from "@/lib/scene/schema";
 import { useEditor, type Render, type Tool } from "@/store/editor";
+import { useLibrary } from "@/store/library";
 import { CameraPanel } from "./CameraPanel";
 import { ChatPanel } from "./ChatPanel";
 import { Inspector } from "./Inspector";
@@ -49,6 +50,7 @@ export function Studio() {
   useEffect(() => {
     if (booted.current) return;
     booted.current = true;
+    void useLibrary.getState().refresh();
     (async () => {
       fetch("/api/status")
         .then((r) => r.json())

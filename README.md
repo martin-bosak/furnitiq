@@ -25,6 +25,15 @@ npm run dev
 - **Live view:** PBR materials (`src/components/three/materials.ts`) using CC0 Poly Haven textures in `public/assets` (linen, cherry/oak veneer, plaster, laminate). An HDRI (`autumn_park`) provides daylight and the view through the windows, the sun casts shadows, and N8AO adds ambient occlusion through three's `EffectComposer` (`PostFX.tsx`).
 - **Photo mode** (aperture button): progressive GPU path tracing with `three-gpu-pathtracer` on the same scene, with an edge-aware denoiser and up to 600 samples per pixel. Moving the camera restarts it. "Save photo" stores the image in the gallery (`POST /api/renders`). The AI SHOT button also uses this image when Photo mode is on.
 
+### My library: generated furniture
+
+Detailed, textured 3D models of real furniture, shared by all projects (`src/lib/library/`, API under `/api/library`). Scene items link to them with `assetId`, the model is scaled to the item's size, and the catalog model stays as fallback.
+
+- **From photos:** 1–4 photos of one piece plus its size.
+- **From a product link:** the server reads the page's structured data (name, exact dimensions, product images). It is guarded against fetching private addresses. Tested on ikea.com.
+- **From room photos:** local Claude Code (vision) finds each piece in the room photos, matches it to plan items, groups identical pieces and picks the clearest view. Each crop is queued, and the plan items are linked. Mostly hidden pieces are listed as "needs a clear photo" instead of being generated.
+- **Generation** runs on the local GPU, see [`gen/README.md`](gen/README.md).
+
 ### Scene format: `furnitiq.scene` v1
 
 `src/lib/scene/schema.ts` (zod) defines the single source of truth. It contains walls (segments with thickness and height), openings (door or window on a wall at an offset), rooms (polygons with a floor material), furniture (catalog type, footprint center, rotation, size), cameras (eye position and target) and a render style prompt. Units are meters. Plan y points down (south). Rotation is in degrees clockwise, and rotation 0 means the item's front faces +y.

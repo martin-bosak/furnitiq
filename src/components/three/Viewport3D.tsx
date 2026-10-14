@@ -2,13 +2,15 @@
 
 import { Environment } from "@react-three/drei";
 import { Canvas, useFrame, useThree, type ThreeEvent } from "@react-three/fiber";
-import { useEffect, useMemo, useRef } from "react";
+import { Component, Suspense, useEffect, useMemo, useRef, type ReactNode } from "react";
 import * as THREE from "three";
 import { sceneBounds, wallAngle, wallLength, pointOnWall } from "@/lib/scene/ops";
 import { resolveRooms, type ResolvedRoom } from "@/lib/scene/rooms";
 import type { Furniture, Opening, Room, Vec2, Wall } from "@/lib/scene/schema";
 import { activeCamera, useEditor } from "@/store/editor";
 import { viewportApi } from "./api";
+import { useLibrary } from "@/store/library";
+import { AssetModel } from "./AssetModel";
 import { FurnitureModel } from "./FurnitureModel";
 import { floorMaterial, material } from "./materials";
 import { PathTracer } from "./PathTracer";
@@ -98,6 +100,11 @@ function SceneContents() {
 
 function FurnitureItem({ f, selected }: { f: Furniture; selected: boolean }) {
   const select = useEditor((s) => s.select);
+  // Generated model from My library, when linked and ready.
+  const modelUrl = useLibrary((s) => {
+    const a = f.assetId ? s.assets.find((x) => x.id === f.assetId) : undefined;
+    return a?.status === "ready" ? a.model : undefined;
+  });
   const [w, d, h] = f.size;
   const onClick = (e: ThreeEvent<MouseEvent>) => {
     if (e.delta > 4) return;
@@ -106,7 +113,15 @@ function FurnitureItem({ f, selected }: { f: Furniture; selected: boolean }) {
   };
   return (
     <group position={[f.position[0], f.elevation, f.position[1]]} rotation-y={-rad(f.rotation)} onClick={onClick}>
-      <FurnitureModel f={f} />
+      {modelUrl ? (
+        <ModelBoundary fallback={<FurnitureModel f={f} />}>
+          <Suspense fallback={<FurnitureModel f={f} />}>
+            <AssetModel url={modelUrl} size={f.size} />
+          </Suspense>
+        </ModelBoundary>
+      ) : (
+        <FurnitureModel f={f} />
+      )}
       {selected && (
         <lineSegments position={[0, h / 2, 0]} userData={{ helper: true }}>
           <edgesGeometry args={[new THREE.BoxGeometry(w + 0.04, h + 0.04, d + 0.04)]} />
@@ -115,6 +130,17 @@ function FurnitureItem({ f, selected }: { f: Furniture; selected: boolean }) {
       )}
     </group>
   );
+}
+
+/** Falls back to the parametric model if a library file fails to load. */
+class ModelBoundary extends Component<{ fallback: ReactNode; children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+  render() {
+    return this.state.failed ? this.props.fallback : this.props.children;
+  }
 }
 
 function shapeGeometry(polygon: Vec2[], flipY: boolean) {

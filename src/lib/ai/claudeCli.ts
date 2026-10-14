@@ -53,42 +53,8 @@ ${history ? `Conversation so far:\n${history}\n\n` : ""}User request: ${ctx.mess
 
 Respond with ONLY a JSON object, no prose and no code fences: {"reply": "<1-3 sentences>", "ops": [SceneOp, ...]}`;
 
-  const args = [
-    "-p",
-    "--output-format", "json",
-    "--tools", "",
-    "--no-session-persistence",
-    "--strict-mcp-config",
-    "--system-prompt", "You are Furnitiq's interior design agent. You answer only with the requested JSON.",
-  ];
-  if (process.env.FURNITIQ_CLAUDE_MODEL) args.push("--model", process.env.FURNITIQ_CLAUDE_MODEL);
-
-  const stdout = await new Promise<string>((resolve, reject) => {
-    // Run outside the project so the CLI doesn't pick up this repo's CLAUDE.md/AGENTS.md.
-    const child = spawn(BIN, args, { cwd: os.tmpdir(), windowsHide: true });
-    let out = "";
-    let err = "";
-    const timer = setTimeout(() => {
-      child.kill();
-      reject(new Error("Claude Code CLI timed out"));
-    }, TIMEOUT_MS);
-    child.stdout.on("data", (d) => (out += d));
-    child.stderr.on("data", (d) => (err += d));
-    child.on("error", (e) => {
-      clearTimeout(timer);
-      reject(new Error(`Could not start "${BIN}": ${e.message}`));
-    });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      if (code === 0) resolve(out);
-      else reject(new Error(`Claude Code CLI exited with ${code}: ${(err || out).slice(0, 400)}`));
-    });
-    child.stdin.end(prompt);
-  });
-
-  const envelope = JSON.parse(stdout) as { result?: string; is_error?: boolean };
-  if (envelope.is_error || typeof envelope.result !== "string") throw new Error(`Claude Code CLI error: ${stdout.slice(0, 400)}`);
-  const parsed = extractJson(envelope.result) as { reply?: string; ops?: SceneOp[] };
+  const result = await claudePrint(prompt, { systemPrompt: "You are Furnitiq's interior design agent. You answer only with the requested JSON." });
+  const parsed = extractJson(result) as { reply?: string; ops?: SceneOp[] };
 
   // Keep only ops that apply cleanly, so one bad reference doesn't sink the rest.
   let scene = ctx.scene;
@@ -106,7 +72,55 @@ Respond with ONLY a JSON object, no prose and no code fences: {"reply": "<1-3 se
   return { reply, ops };
 }
 
-function extractJson(text: string): unknown {
+/**
+ * One headless `claude -p` call; returns the final text. Tools are off unless
+ * listed (e.g. ["Read"] with `addDirs` to let it look at image files).
+ */
+export async function claudePrint(
+  prompt: string,
+  opts: { systemPrompt: string; tools?: string[]; addDirs?: string[]; timeoutMs?: number },
+): Promise<string> {
+  const tools = opts.tools ?? [];
+  const args = [
+    "-p",
+    "--output-format", "json",
+    "--tools", tools.join(","),
+    "--no-session-persistence",
+    "--strict-mcp-config",
+    "--system-prompt", opts.systemPrompt,
+  ];
+  if (tools.length) args.push("--allowedTools", tools.join(","));
+  for (const d of opts.addDirs ?? []) args.push("--add-dir", d);
+  if (process.env.FURNITIQ_CLAUDE_MODEL) args.push("--model", process.env.FURNITIQ_CLAUDE_MODEL);
+
+  const stdout = await new Promise<string>((resolve, reject) => {
+    // Run outside the project so the CLI doesn't pick up this repo's CLAUDE.md/AGENTS.md.
+    const child = spawn(BIN, args, { cwd: os.tmpdir(), windowsHide: true });
+    let out = "";
+    let err = "";
+    const timer = setTimeout(() => {
+      child.kill();
+      reject(new Error("Claude Code CLI timed out"));
+    }, opts.timeoutMs ?? TIMEOUT_MS);
+    child.stdout.on("data", (d) => (out += d));
+    child.stderr.on("data", (d) => (err += d));
+    child.on("error", (e) => {
+      clearTimeout(timer);
+      reject(new Error(`Could not start "${BIN}": ${e.message}`));
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolve(out);
+      else reject(new Error(`Claude Code CLI exited with ${code}: ${(err || out).slice(0, 400)}`));
+    });
+    child.stdin.end(prompt);
+  });
+  const envelope = JSON.parse(stdout) as { result?: string; is_error?: boolean };
+  if (envelope.is_error || typeof envelope.result !== "string") throw new Error(`Claude Code CLI error: ${stdout.slice(0, 400)}`);
+  return envelope.result;
+}
+
+export function extractJson(text: string): unknown {
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
   const body = fenced ? fenced[1] : text;
   const start = body.indexOf("{");

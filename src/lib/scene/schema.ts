@@ -68,6 +68,8 @@ export const Furniture = z.object({
   /** [width (x), depth (y), height] in meters. */
   size: z.tuple([z.number().positive(), z.number().positive(), z.number().positive()]),
   color: z.string().optional(),
+  /** My library asset (generated 3D model). The model is scaled to `size`; `type` stays as fallback. */
+  assetId: z.string().optional(),
   /** Free-form: material, brand, product url, notes from the vision agent… */
   meta: z.record(z.string(), z.unknown()).optional(),
 });

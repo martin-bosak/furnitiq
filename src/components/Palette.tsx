@@ -1,11 +1,14 @@
 "use client";
 
-import { Armchair, Bath, Bed, BookOpen, Box, ChefHat, Flower2, Lamp, Plus, Refrigerator, Search, Sofa, Square, Table, Tv } from "lucide-react";
+import { AlertTriangle, Armchair, Bath, Bed, BookOpen, Box, ChefHat, Flower2, Lamp, Loader2, Plus, Refrigerator, RotateCw, Search, Sofa, Sparkles, Square, Table, Trash2, Tv } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useMemo, useState } from "react";
+import type { LibraryAsset } from "@/lib/library/types";
 import { CATALOG, type CatalogKey } from "@/lib/scene/catalog";
 import { sceneBounds } from "@/lib/scene/ops";
 import { useEditor } from "@/store/editor";
+import { useLibrary } from "@/store/library";
+import { LibraryDialog } from "./LibraryDialog";
 
 const ICONS: Partial<Record<CatalogKey, React.ComponentType<{ size?: number }>>> = {
   sofa: Sofa,
@@ -66,9 +69,16 @@ export function Palette() {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
+  const [tab, setTab] = useState<"catalog" | "library">("catalog");
+  const [creating, setCreating] = useState(false);
   const { applyOps, select } = useEditor.getState();
+  const assets = useLibrary((s) => s.assets);
 
   const results = useMemo(() => (Object.keys(CATALOG) as CatalogKey[]).filter((k) => matches(k, query)), [query]);
+  const libResults = useMemo(() => {
+    const q = query.toLowerCase().split(/\s+/).filter(Boolean);
+    return assets.filter((a) => q.every((w) => `${a.name} ${CATALOG[a.category as CatalogKey]?.label ?? a.category}`.toLowerCase().includes(w)));
+  }, [assets, query]);
 
   const toggle = () => {
     setQuery("");
@@ -76,12 +86,16 @@ export function Palette() {
     setOpen((v) => !v);
   };
 
-  const add = (type: CatalogKey) => {
+  const add = (type: CatalogKey, asset?: LibraryAsset) => {
     const st = useEditor.getState();
     const b = sceneBounds(st.scene);
     const pos = st.pin ?? [(b.minX + b.maxX) / 2, (b.minY + b.maxY) / 2];
     const before = new Set(st.scene.furniture.map((f) => f.id));
-    applyOps([{ op: "add_furniture", type, position: pos }]);
+    applyOps([
+      asset
+        ? { op: "add_furniture", type, position: pos, name: asset.name, size: asset.size, assetId: asset.id, ...(asset.color && { color: asset.color }) }
+        : { op: "add_furniture", type, position: pos },
+    ]);
     const added = useEditor.getState().scene.furniture.find((f) => !before.has(f.id));
     if (added) select({ kind: "furniture", id: added.id });
     setOpen(false);
@@ -92,6 +106,10 @@ export function Palette() {
     if (e.key === "Escape") {
       e.preventDefault();
       setOpen(false);
+    } else if (e.key === "Enter" && tab === "library") {
+      e.preventDefault();
+      const a = libResults.find((x) => x.status === "ready");
+      if (a) add(a.category as CatalogKey, a);
     } else if (e.key === "Enter" && results[active]) {
       e.preventDefault();
       add(results[active]);
@@ -129,8 +147,24 @@ export function Palette() {
                   className="field !h-9 !rounded-full !pl-8"
                 />
               </div>
+              <div className="mt-2 flex items-center gap-1">
+                <div className="flex flex-1 rounded-full bg-white/5 p-0.5 text-[11px]">
+                  {(["catalog", "library"] as const).map((t) => (
+                    <button key={t} onClick={() => setTab(t)} className={`flex-1 rounded-full py-1 transition ${tab === t ? "bg-white/15 text-white" : "text-white/50 hover:text-white"}`}>
+                      {t === "catalog" ? "Catalog" : `My library${assets.length ? ` · ${assets.length}` : ""}`}
+                    </button>
+                  ))}
+                </div>
+                <button onClick={() => setCreating(true)} className="flex h-7 items-center gap-1 rounded-full bg-gradient-to-br from-cyan-300/90 to-violet-400/90 px-2.5 text-[11px] font-medium text-[#07080c]" title="Generate from a photo or product link">
+                  <Sparkles size={12} /> New
+                </button>
+              </div>
               <div className="mt-1.5 px-1 text-[11px] text-white/35">Adds at the pinned location (click on the plan to pin)</div>
             </div>
+            {tab === "library" ? (
+              <LibraryGrid assets={libResults} empty={!assets.length} onAdd={(a) => add(a.category as CatalogKey, a)} onNew={() => setCreating(true)} />
+            ) : (
+              <>
             {!results.length && <div className="px-1 py-6 text-center text-xs text-white/40">No furniture matches “{query}”</div>}
             {GROUPS.map((g) => {
               const items = results.filter((k) => CATALOG[k].category === g);
@@ -162,7 +196,22 @@ export function Palette() {
                 </div>
               );
             })}
+              </>
+            )}
           </motion.div>
+        )}
+      </AnimatePresence>
+      <AnimatePresence>
+        {creating && (
+          <LibraryDialog
+            onClose={() => setCreating(false)}
+            onCreated={(a) => {
+              useLibrary.getState().upsert(a);
+              setCreating(false);
+              setTab("library");
+              setOpen(true);
+            }}
+          />
         )}
       </AnimatePresence>
       <button onClick={toggle} className="glass flex h-10 items-center gap-2 rounded-full pr-4 pl-3 text-sm text-white/80 hover:text-white">
@@ -171,6 +220,72 @@ export function Palette() {
         </span>
         Furniture
       </button>
+    </div>
+  );
+}
+
+function LibraryGrid({ assets, empty, onAdd, onNew }: { assets: LibraryAsset[]; empty: boolean; onAdd: (a: LibraryAsset) => void; onNew: () => void }) {
+  if (empty)
+    return (
+      <div className="px-2 py-6 text-center text-xs leading-relaxed text-white/45">
+        Your own furniture, generated as detailed 3D models from photos or product links.
+        <button onClick={onNew} className="btn mx-auto mt-3 !text-xs">
+          <Sparkles size={13} /> Create the first one
+        </button>
+      </div>
+    );
+  if (!assets.length) return <div className="px-1 py-6 text-center text-xs text-white/40">Nothing in My library matches</div>;
+  return (
+    <div className="mt-2 grid grid-cols-2 gap-2">
+      {assets.map((a) => {
+        const ready = a.status === "ready";
+        return (
+          <div key={a.id} className="group relative overflow-hidden rounded-2xl border border-white/5 bg-white/[0.03]">
+            <button disabled={!ready} onClick={() => onAdd(a)} className="block w-full text-left disabled:cursor-default" title={ready ? "Add to the plan" : a.stage}>
+              <div className="relative aspect-[4/3] bg-white/[0.04]">
+                {a.thumbnail && (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={a.thumbnail} alt="" className={`h-full w-full object-contain p-1 ${ready ? "" : "opacity-40"}`} />
+                )}
+                {!ready && (
+                  <div className="absolute inset-0 grid place-items-center p-2 text-center">
+                    {a.status === "failed" ? (
+                      <span className="flex flex-col items-center gap-1 text-[10px] text-rose-200">
+                        <AlertTriangle size={16} /> {a.error?.slice(0, 80) ?? "Failed"}
+                      </span>
+                    ) : (
+                      <span className="flex flex-col items-center gap-1 text-[10px] text-white/75">
+                        <Loader2 size={16} className="animate-spin" /> {a.stage ?? "Queued"}
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
+              <div className="px-2 py-1.5">
+                <div className="truncate text-[11px] text-white/85">{a.name}</div>
+                <div className="font-mono text-[10px] text-white/35">{a.size.map((v) => Math.round(v * 100)).join("×")} cm</div>
+              </div>
+            </button>
+            <div className="absolute top-1 right-1 flex gap-1 opacity-0 transition group-hover:opacity-100">
+              {a.status === "failed" && (
+                <button
+                  onClick={async () => {
+                    const res = await fetch(`/api/library/${a.id}/retry`, { method: "POST" });
+                    if (res.ok) useLibrary.getState().upsert(await res.json());
+                  }}
+                  className="grid h-6 w-6 place-items-center rounded-full bg-black/60 text-white/80 hover:text-white"
+                  title="Try again"
+                >
+                  <RotateCw size={11} />
+                </button>
+              )}
+              <button onClick={() => useLibrary.getState().remove(a.id)} className="grid h-6 w-6 place-items-center rounded-full bg-black/60 text-white/80 hover:text-rose-300" title="Delete from My library">
+                <Trash2 size={11} />
+              </button>
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }

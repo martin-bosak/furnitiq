@@ -5,6 +5,7 @@ import { desc, eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 import { nanoid } from "nanoid";
 import postgres from "postgres";
+import type { LibraryAsset } from "@/lib/library/types";
 import { parseScene, type Scene } from "@/lib/scene/schema";
 import * as t from "./schema";
 
@@ -21,6 +22,11 @@ export interface Repo {
   deleteProject(id: string): Promise<void>;
   listRenders(projectId: string): Promise<RenderRow[]>;
   addRender(r: Omit<RenderRow, "id" | "createdAt">): Promise<RenderRow>;
+  // My library (shared across projects)
+  listAssets(): Promise<LibraryAsset[]>;
+  getAsset(id: string): Promise<LibraryAsset | null>;
+  saveAsset(asset: LibraryAsset): Promise<LibraryAsset>;
+  deleteAsset(id: string): Promise<void>;
 }
 
 export const DATA_DIR = process.env.FURNITIQ_DATA_DIR || path.join(process.cwd(), "data");
@@ -40,6 +46,9 @@ function postgresRepo(url: string): Repo {
       id text PRIMARY KEY, project_id text NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
       url text NOT NULL, camera_name text NOT NULL, prompt text NOT NULL,
       created_at timestamptz NOT NULL DEFAULT now());
+    CREATE TABLE IF NOT EXISTS library_assets (
+      id text PRIMARY KEY, data jsonb NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now());
   `.simple();
   const conn = async () => (await ready, drz);
   const toProject = (r: typeof t.projects.$inferSelect): Project => ({
@@ -88,12 +97,42 @@ function postgresRepo(url: string): Repo {
       const [row] = await (await conn()).insert(t.renders).values({ id: nanoid(10), ...r }).returning();
       return { ...row, createdAt: row.createdAt.toISOString() };
     },
+    async listAssets() {
+      await ready;
+      const rows = await sql<{ data: LibraryAsset }[]>`SELECT data FROM library_assets ORDER BY created_at DESC`;
+      return rows.map((r) => r.data);
+    },
+    async getAsset(id) {
+      await ready;
+      const [row] = await sql<{ data: LibraryAsset }[]>`SELECT data FROM library_assets WHERE id = ${id}`;
+      return row?.data ?? null;
+    },
+    async saveAsset(asset) {
+      await ready;
+      await sql`
+        INSERT INTO library_assets (id, data) VALUES (${asset.id}, ${sql.json(asset as never)})
+        ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = now()`;
+      return asset;
+    },
+    async deleteAsset(id) {
+      await ready;
+      await sql`DELETE FROM library_assets WHERE id = ${id}`;
+    },
   };
 }
 
 // ── Local JSON files (fallback until DATABASE_URL is configured) ────────────
 
 function localRepo(): Repo {
+  const assetsFile = path.join(DATA_DIR, "library", "assets.json");
+  let assetLock: Promise<void> = Promise.resolve();
+  const readAssets = async (): Promise<LibraryAsset[]> => {
+    try {
+      return JSON.parse(await fs.readFile(assetsFile, "utf8"));
+    } catch {
+      return [];
+    }
+  };
   const dir = path.join(DATA_DIR, "projects");
   const file = (id: string) => path.join(dir, `${id.replace(/[^\w-]/g, "")}.json`);
   type Stored = Project & { renders: RenderRow[] };
@@ -150,6 +189,33 @@ function localRepo(): Repo {
       await write(p);
       return row;
     },
+    async listAssets() {
+      return readAssets();
+    },
+    async getAsset(id) {
+      return (await readAssets()).find((a) => a.id === id) ?? null;
+    },
+    async saveAsset(asset) {
+      // Serialize writes: the generator sync and the UI can update the same file concurrently.
+      assetLock = assetLock.then(async () => {
+        const all = await readAssets();
+        const i = all.findIndex((a) => a.id === asset.id);
+        if (i >= 0) all[i] = asset;
+        else all.unshift(asset);
+        await fs.mkdir(path.dirname(assetsFile), { recursive: true });
+        await fs.writeFile(assetsFile, JSON.stringify(all, null, 2));
+      });
+      await assetLock;
+      return asset;
+    },
+    async deleteAsset(id) {
+      assetLock = assetLock.then(async () => {
+        const all = (await readAssets()).filter((a) => a.id !== id);
+        await fs.mkdir(path.dirname(assetsFile), { recursive: true });
+        await fs.writeFile(assetsFile, JSON.stringify(all, null, 2));
+      });
+      await assetLock;
+    },
   };
 }
 
@@ -160,8 +226,8 @@ export function getRepo(): Repo {
 
 // ── Local file storage (renders, uploads) ──────────────────────────────────
 
-export async function saveFile(folder: string, data: Buffer, ext: string) {
-  const name = `${nanoid(12)}.${ext}`;
+export async function saveFile(folder: string, data: Buffer, ext: string, fileName?: string) {
+  const name = fileName ?? `${nanoid(12)}.${ext}`;
   const dir = path.join(DATA_DIR, "files", folder);
   await fs.mkdir(dir, { recursive: true });
   await fs.writeFile(path.join(dir, name), data);
