@@ -5,10 +5,13 @@ import { Canvas, useFrame, useThree, type ThreeEvent } from "@react-three/fiber"
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
-import { DRACO_URL, MODEL_URL, ROOMS, floorById, roomById, roomCenter, toThree, type Room } from "./data";
+import { DRACO_URL, MODEL_URL, ROOMS, floorById, roomAt, roomById, roomCenter, toThree, type Room } from "./data";
 import { ITEMS, applyLayout, gizmo, itemInfo, itemTransform, setItemTransform } from "./items";
 import { useEdit } from "./editStore";
 import { useChalupa } from "./store";
+import { WalkController } from "./Walk";
+import { COLLIDE, W, walkTowards } from "./walkPhysics";
+import { DOORS, LAMPS, doorOf, lampOn, lampPos, stepDoors, toggleDoor, type Lamp } from "./world";
 
 const HDRI = "/assets/hdri/autumn_park_1k.hdr";
 // House footprint in three.js coordinates (x, z), used to frame whole-house and floor views.
@@ -29,12 +32,13 @@ export function ChalupaScene() {
       }}
     >
       <Suspense fallback={null}>
-        <Environment files={HDRI} background={false} environmentIntensity={0.9} />
-        <Lights />
+        <Atmosphere />
         <House />
         <Ground />
         <RoomOverlay />
         <EditGizmo />
+        <NightLights />
+        <WalkController />
       </Suspense>
       <CameraRig />
       <SectionPlane />
@@ -53,14 +57,19 @@ export function LoadingOverlay() {
   );
 }
 
-function Lights() {
+/** Sky, sun and ambient light; evening swaps them for a dark sky and a faint moon. */
+function Atmosphere() {
+  const night = useChalupa((s) => s.night);
+  const walk = useChalupa((s) => s.mode === "walk");
   return (
     <>
-      <hemisphereLight args={["#e9f0ff", "#4a4236", 0.6]} />
+      <Environment files={HDRI} background={walk && !night} environmentIntensity={night ? 0.06 : 0.9} backgroundIntensity={0.9} />
+      {night && <color attach="background" args={["#0a0d16"]} />}
+      <hemisphereLight args={[night ? "#7f93c9" : "#e9f0ff", night ? "#1c1814" : "#4a4236", night ? 0.12 : 0.6]} />
       <directionalLight
         position={[-12, 22, 18]}
-        intensity={3.2}
-        color="#fff1dc"
+        intensity={night ? 0.22 : 3.2}
+        color={night ? "#9fb4e6" : "#fff1dc"}
         castShadow
         shadow-mapSize={[2048, 2048]}
         shadow-bias={-0.0004}
@@ -79,8 +88,15 @@ function Lights() {
 }
 
 function Ground() {
+  const ref = useRef<THREE.Mesh>(null);
+  useEffect(() => {
+    const m = ref.current;
+    if (!m) return;
+    COLLIDE.push(m);
+    return () => void COLLIDE.splice(COLLIDE.indexOf(m), 1);
+  }, []);
   return (
-    <mesh rotation-x={-Math.PI / 2} position={[7.4, -0.38, 4.8]} receiveShadow>
+    <mesh ref={ref} rotation-x={-Math.PI / 2} position={[7.4, -0.38, 4.8]} receiveShadow>
       <circleGeometry args={[34, 64]} />
       <meshStandardMaterial color="#5d6b4a" roughness={1} />
     </mesh>
@@ -130,7 +146,7 @@ function patchMaterial(m: THREE.Material, opts: { xray: boolean; poche: boolean 
   m.needsUpdate = true;
 }
 
-type Cat = "house" | "roof" | "site" | "glass" | "furn" | "fixed";
+type Cat = "house" | "roof" | "site" | "glass" | "furn" | "fixed" | "door";
 
 // Hand-tuned colours for the big surfaces (the Blender materials are procedural and export as flat averages).
 const COLORS: Record<string, string> = {
@@ -160,9 +176,15 @@ function House() {
 
   // Prepare materials once: double sided (so cut walls read as solid), cutaway shader, shadows.
   const groups = useMemo(() => {
-    const g: Record<Cat, THREE.Object3D[]> = { house: [], roof: [], site: [], glass: [], furn: [], fixed: [] };
+    const g: Record<Cat, THREE.Object3D[]> = { house: [], roof: [], site: [], glass: [], furn: [], fixed: [], door: [] };
     const seen = new Set<THREE.Material>();
+    gltf.scene.updateMatrixWorld(true);
+    const lamps: THREE.Object3D[] = [];
     gltf.scene.traverse((o) => {
+      if (o.userData.cat === "lamp") lamps.push(o);
+      if (o.userData.cat === "door" && !DOORS.has(o.userData.door)) {
+        DOORS.set(o.userData.door, { id: o.userData.door, obj: o, label: o.userData.label ?? "Dveře", openAngle: o.userData.openAngle ?? Math.PI / 2, open: false, angle: 0 });
+      }
       const mesh = o as THREE.Mesh;
       if (!mesh.isMesh) return;
       const cat = ((o.userData.cat as Cat) ?? (o.parent?.userData.cat as Cat) ?? "house") as Cat;
@@ -179,7 +201,9 @@ function House() {
         if (seen.has(m)) continue;
         seen.add(m);
         const sm = m as THREE.MeshStandardMaterial;
+        if (sm.emissive && sm.emissive.getHex() !== 0 && !GLOW.includes(sm)) GLOW.push(sm);
         if (cat === "glass" || sm.transparent || sm.opacity < 1) {
+          if (!GLASS.includes(sm)) GLASS.push(sm);
           sm.transparent = true;
           sm.opacity = Math.min(sm.opacity, 0.25);
           sm.depthWrite = false;
@@ -194,11 +218,35 @@ function House() {
           sm.metalness = 0;
           sm.roughness = Math.max(sm.roughness, 0.55);
         }
-        patchMaterial(sm, { xray: cat === "house" || cat === "roof", poche: cat !== "furn" && cat !== "fixed" });
+        patchMaterial(sm, { xray: cat === "house" || cat === "roof", poche: cat !== "furn" && cat !== "fixed" && cat !== "door" });
       }
     });
+    if (!LAMPS.length) {
+      for (const o of lamps) {
+        const item = o.userData.item ? ITEMS.get(o.userData.item) : undefined;
+        const world = o.getWorldPosition(new THREE.Vector3());
+        const c = o.userData.color as number[] | undefined;
+        LAMPS.push({
+          obj: o,
+          energy: Number(o.userData.energy) || 20,
+          color: new THREE.Color().setRGB(c?.[0] ?? 1, c?.[1] ?? 0.9, c?.[2] ?? 0.8),
+          floor: Number(o.userData.floor) || 1,
+          item,
+          local: item ? item.worldToLocal(world.clone()) : undefined,
+        });
+      }
+    }
     return g;
   }, [gltf]);
+
+  useEffect(() => {
+    COLLIDE.push(gltf.scene);
+    return () => void COLLIDE.splice(COLLIDE.indexOf(gltf.scene), 1);
+  }, [gltf]);
+
+  useFrame((_, dt) => {
+    stepDoors(Math.min(dt, 0.05));
+  });
 
   const layout = useEdit((s) => s.layout);
   const edit = useEdit((s) => s.edit);
@@ -209,34 +257,55 @@ function House() {
     applyLayout(gltf.scene, layout, layers.furniture);
   }, [gltf, layout, layers.furniture]);
 
+  const mode = useChalupa((s) => s.mode);
   useEffect(() => {
+    const walk = mode === "walk";
     for (const o of groups.fixed) o.visible = layers.furniture;
-    for (const o of groups.site) o.visible = layers.site;
+    // Walking needs the ground and the roof (attic, the view from outside).
+    for (const o of groups.site) o.visible = layers.site || walk;
     // The roof only makes sense from outside: floor views cut it away anyway.
-    for (const o of groups.roof) o.visible = layers.roof && view === 0;
-  }, [groups, layers, view]);
+    for (const o of groups.roof) o.visible = walk || (layers.roof && view === 0);
+  }, [groups, layers, view, mode]);
 
-  // Edit mode: click picks the nearest visible furniture item below the section plane.
+  // Click: in edit mode picks the nearest visible furniture item below the section plane;
+  // otherwise opens or closes a door, and in walk mode a click on a floor walks there.
+  const firstHit = (e: ThreeEvent<MouseEvent | PointerEvent>) => {
+    const cutY = CUT.uCutY.value + 1e-3;
+    return e.intersections.find((h) => h.point.y <= cutY && shown(h.object) && !isGlass(h.object));
+  };
   const onClick = (e: ThreeEvent<MouseEvent>) => {
-    if (!edit || e.delta > 4 || Date.now() - gizmo.lastUp < 300) return;
-    e.stopPropagation();
-    const cutY = CUT.uCutY.value + 1e-3;
-    const hit = e.intersections.find((h) => h.point.y <= cutY && shown(h.object) && !isGlass(h.object));
-    const item = hit ? itemOf(hit.object) : null;
-    select(item ? itemInfo(item) : null);
+    if (e.delta > 5 || Date.now() - gizmo.lastUp < 300) return;
+    const hit = firstHit(e);
+    if (edit) {
+      e.stopPropagation();
+      const item = hit ? itemOf(hit.object) : null;
+      select(item ? itemInfo(item) : null);
+      return;
+    }
+    if (!hit) return;
+    const door = doorOf(hit.object);
+    if (door) {
+      e.stopPropagation();
+      toggleDoor(door);
+      return;
+    }
+    if (mode === "walk" && hit.face) {
+      const n = hit.face.normal.clone().transformDirection(hit.object.matrixWorld);
+      if (Math.abs(n.y) > 0.7 && hit.point.y < W.pos.y + 0.6) walkTowards(hit.point);
+    }
   };
-  const [hover, setHover] = useState(false);
+  const [hover, setHover] = useState<"item" | "door" | null>(null);
   useEffect(() => {
-    document.body.style.cursor = edit && hover ? "pointer" : "";
-  }, [edit, hover]);
+    document.body.style.cursor = hover ? "pointer" : "";
+  }, [hover]);
   const onMove = (e: ThreeEvent<PointerEvent>) => {
-    if (!edit) return;
-    const cutY = CUT.uCutY.value + 1e-3;
-    const hit = e.intersections.find((h) => h.point.y <= cutY && shown(h.object) && !isGlass(h.object));
-    setHover(!!(hit && itemOf(hit.object)));
+    const hit = firstHit(e);
+    if (!hit) return setHover(null);
+    if (edit) return setHover(itemOf(hit.object) ? "item" : null);
+    setHover(doorOf(hit.object) ? "door" : null);
   };
 
-  return <primitive object={gltf.scene} onClick={onClick} onPointerMove={onMove} onPointerOut={() => setHover(false)} />;
+  return <primitive object={gltf.scene} onClick={onClick} onPointerMove={onMove} onPointerOut={() => setHover(null)} />;
 }
 useGLTF.preload(MODEL_URL, DRACO_URL);
 
@@ -302,8 +371,9 @@ function SectionPlane() {
   const gl = useThree((s) => s.gl);
   const view = useChalupa((s) => s.view);
   const cut = useChalupa((s) => s.cut);
+  const walk = useChalupa((s) => s.mode === "walk");
   useEffect(() => {
-    if (view === 0) {
+    if (view === 0 || walk) {
       gl.clippingPlanes = [];
       CUT.uPoche.value = 0;
       CUT.uCutY.value = 1e6;
@@ -313,7 +383,7 @@ function SectionPlane() {
       CUT.uPoche.value = 1;
       CUT.uCutY.value = y;
     }
-  }, [gl, view, cut]);
+  }, [gl, view, cut, walk]);
   return null;
 }
 
@@ -323,14 +393,15 @@ function RoomOverlay() {
   const room = useChalupa((s) => s.room);
   const labels = useChalupa((s) => s.layers.labels);
   const setRoom = useChalupa((s) => s.setRoom);
-  const active = room && view !== 0 ? roomById(room) : undefined;
+  const walk = useChalupa((s) => s.mode === "walk");
+  const active = room && view !== 0 && !walk ? roomById(room) : undefined;
   return (
     <>
       {active && <RoomHighlight r={active} />}
       {/* Labels stay mounted (drei Html owns a React root); visibility is CSS only. */}
       {ROOMS.map((r) => {
         const [x, y, z] = roomCenter(r);
-        const show = labels && view === r.floor;
+        const show = labels && view === r.floor && !walk;
         return (
           <Html key={r.id} position={[x, y + 0.25, z]} center zIndexRange={[20, 0]} style={{ display: show ? "block" : "none" }}>
             <button
@@ -375,12 +446,13 @@ function CameraRig() {
   const nonce = useChalupa((s) => s.flyNonce);
   const xray = useChalupa((s) => s.layers.xray);
   const view = useChalupa((s) => s.view);
+  const walk = useChalupa((s) => s.mode === "walk");
   const goal = useRef<{ pos: THREE.Vector3; tgt: THREE.Vector3 } | null>(null);
 
   useEffect(() => {
     const { view, room } = useChalupa.getState();
     const c = controls.current;
-    if (!c) return;
+    if (!c || useChalupa.getState().mode === "walk") return;
     const r = room ? roomById(room) : undefined;
     let tgt: THREE.Vector3;
     let dist: number;
@@ -413,12 +485,12 @@ function CameraRig() {
 
   useEffect(() => {
     // From outside the walls are the point, so x-ray only applies to floor and room views.
-    CUT.uXray.value = xray && view !== 0 ? 1 : 0;
-  }, [xray, view]);
+    CUT.uXray.value = xray && view !== 0 && !walk ? 1 : 0;
+  }, [xray, view, walk]);
 
   useFrame((_, dt) => {
     const c = controls.current;
-    if (!c) return;
+    if (!c || walk) return;
     const g = goal.current;
     if (g) {
       const k = 1 - Math.exp(-dt * 4);
@@ -435,6 +507,7 @@ function CameraRig() {
     <OrbitControls
       ref={controls}
       makeDefault
+      enabled={!walk}
       target={HOUSE_CENTER.toArray() as [number, number, number]}
       enableDamping
       dampingFactor={0.08}
@@ -446,3 +519,109 @@ function CameraRig() {
   );
 }
 
+
+// ---------------------------------------------------------------- evening: lamps, glowing shades and windows
+const GLOW: THREE.MeshStandardMaterial[] = [];
+const GLASS: THREE.MeshStandardMaterial[] = [];
+const POOL = 12;
+const SHADOWED = 2;
+
+/**
+ * A fixed pool of point lights (a constant light count keeps shaders compiled once), moved every
+ * few frames to the lamps nearest to where you look or walk. The two strongest cast shadows,
+ * so light does not leak through walls into the room you are in.
+ */
+function NightLights() {
+  const night = useChalupa((s) => s.night);
+  const mode = useChalupa((s) => s.mode);
+  const view = useChalupa((s) => s.view);
+  const controls = useThree((s) => s.controls) as unknown as { target: THREE.Vector3 } | null;
+  const pool = useMemo(
+    () =>
+      Array.from({ length: POOL }, (_, i) => {
+        const l = new THREE.PointLight("#ffd6a0", 0, 7, 2);
+        if (i < SHADOWED) {
+          l.castShadow = true;
+          l.shadow.mapSize.set(512, 512);
+          l.shadow.bias = -0.003;
+          l.shadow.camera.near = 0.08;
+          l.shadow.camera.far = 9;
+          l.shadow.autoUpdate = false;
+        }
+        return l;
+      }),
+    [],
+  );
+  const st = useMemo(() => ({ t: 1, key: "" }), []);
+
+  useEffect(() => {
+    for (const m of GLOW) m.emissiveIntensity = night ? 3 : 0;
+    // Lit windows seen from outside: warm and more opaque glass.
+    const lit = night && mode === "orbit";
+    for (const m of GLASS) {
+      m.userData.opacity ??= m.opacity;
+      m.emissive.set("#ffb466");
+      m.emissiveIntensity = lit ? 1.4 : 0;
+      m.opacity = lit ? 0.7 : m.userData.opacity;
+    }
+    // Hidden by day: no per-pixel cost for twelve unlit lights (toggling recompiles shaders once).
+    for (const l of pool) {
+      l.visible = night;
+      if (!night) l.intensity = 0;
+    }
+    st.t = 1;
+    st.key = "";
+  }, [night, mode, pool, st]);
+
+  const p = useMemo(() => new THREE.Vector3(), []);
+  useFrame((_, dt) => {
+    if (!night) return;
+    st.t += dt;
+    if (st.t < 0.25) {
+      if (DOORS.size && [...DOORS.values()].some((d) => d.angle !== (d.open ? d.openAngle : 0))) for (let i = 0; i < SHADOWED; i++) pool[i].shadow.needsUpdate = true;
+      return;
+    }
+    st.t = 0;
+    const walk = mode === "walk";
+    const focus = walk ? W.pos : (controls?.target ?? p.set(7.4, 1, 4.8));
+    const floor = walk ? W.floor : view;
+    const here = walk ? roomAt(W.pos.x, W.pos.z, W.floor)?.id : undefined;
+    const scored: { l: Lamp; s: number; pos: THREE.Vector3 }[] = [];
+    for (const l of LAMPS) {
+      if (!lampOn(l)) continue;
+      const pos = lampPos(l, new THREE.Vector3());
+      let s = pos.distanceTo(focus);
+      if (floor && l.floor !== floor) s += 8;
+      if (here && roomAt(pos.x, pos.z, l.floor)?.id === here) s *= 0.3;
+      scored.push({ l, s, pos });
+    }
+    scored.sort((a, b) => a.s - b.s);
+    // Strongest of the chosen ones get the shadow-casting slots.
+    const chosen = scored.slice(0, POOL).sort((a, b) => b.l.energy / (1 + b.s) - a.l.energy / (1 + a.s));
+    const key = chosen.map((c) => `${c.pos.x.toFixed(2)},${c.pos.y.toFixed(2)},${c.pos.z.toFixed(2)}`).join("|");
+    pool.forEach((light, i) => {
+      const c = chosen[i];
+      if (!c) {
+        light.intensity = 0;
+        return;
+      }
+      light.position.copy(c.pos);
+      light.color.copy(c.l.color).lerp(new THREE.Color("#ffc98a"), 0.55);
+      // Blender watts → three.js candela, tuned by eye.
+      light.intensity = Math.min(c.l.energy, 90) * 0.12;
+      light.distance = 3 + Math.sqrt(c.l.energy) * 0.6;
+    });
+    if (key !== st.key) {
+      st.key = key;
+      for (let i = 0; i < SHADOWED; i++) pool[i].shadow.needsUpdate = true;
+    }
+  });
+
+  return (
+    <>
+      {pool.map((l, i) => (
+        <primitive key={i} object={l} />
+      ))}
+    </>
+  );
+}

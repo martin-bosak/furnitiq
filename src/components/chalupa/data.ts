@@ -53,3 +53,27 @@ export function roomCenter(r: Room): [number, number, number] {
   const [x0, y0, x1, y1] = r.box;
   return toThree((x0 + x1) / 2, (y0 + y1) / 2, floorById(r.floor).z);
 }
+
+/** Floor whose level a height (three.js y, meters) belongs to. */
+export function floorAt(y: number) {
+  return y < 2.45 ? 1 : y < 5.05 ? 2 : 3;
+}
+
+/** Smallest room box containing a point in three.js coordinates (x, z) on a floor. */
+export function roomAt(x: number, z: number, floor: number): Room | undefined {
+  const bx = x;
+  const by = -z;
+  let best: Room | undefined;
+  let area = Infinity;
+  for (const r of ROOMS) {
+    if (r.floor !== floor) continue;
+    const [x0, y0, x1, y1] = r.box;
+    if (bx < x0 || bx > x1 || by < y0 || by > y1) continue;
+    const a = (x1 - x0) * (y1 - y0);
+    if (a < area) {
+      area = a;
+      best = r;
+    }
+  }
+  return best;
+}
