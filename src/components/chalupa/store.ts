@@ -24,7 +24,7 @@ export const useChalupa = create<ChalupaState>((set) => ({
   view: 0,
   room: null,
   cut: 1.6,
-  layers: { furniture: true, roof: true, site: true, labels: true, xray: true },
+  layers: { furniture: true, roof: true, site: true, labels: true, xray: false },
   flyNonce: 0,
   setView: (view) => set((s) => ({ view, room: null, flyNonce: s.flyNonce + 1 })),
   setRoom: (room, floor) =>

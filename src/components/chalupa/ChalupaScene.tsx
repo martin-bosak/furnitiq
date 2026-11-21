@@ -89,26 +89,27 @@ const CUT = {
   uTgt: { value: new THREE.Vector3() },
   uXray: { value: 0 },
   uPoche: { value: 0 },
+  uCutY: { value: 1e6 },
 };
 
 function patchMaterial(m: THREE.Material, opts: { xray: boolean; poche: boolean }) {
   m.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, CUT);
     shader.vertexShader =
-      "varying vec3 vWPos;\n" +
+      "varying vec3 vWPos;\nvarying vec3 vWNrm;\n" +
       shader.vertexShader.replace(
         "#include <worldpos_vertex>",
-        "#include <worldpos_vertex>\n  vWPos = (modelMatrix * vec4(transformed, 1.0)).xyz;",
+        "#include <worldpos_vertex>\n  vWPos = (modelMatrix * vec4(transformed, 1.0)).xyz;\n  vWNrm = normalize(mat3(modelMatrix) * objectNormal);",
       );
-    const head = "uniform vec3 uCam;\nuniform vec3 uTgt;\nuniform float uXray;\nuniform float uPoche;\nvarying vec3 vWPos;\n";
+    const head = "uniform vec3 uCam;\nuniform vec3 uTgt;\nuniform float uXray;\nuniform float uPoche;\nuniform float uCutY;\nvarying vec3 vWPos;\nvarying vec3 vWNrm;\n";
     const cut = opts.xray
       ? `
-  if (uXray > 0.5) {
+  if (uXray > 0.5 && abs(vWNrm.y) < 0.6) {
     vec3 d = uTgt - uCam; float L = length(d); vec3 n = d / L;
     float t = dot(vWPos - uCam, n);
     if (t > 0.0 && t < L - 0.8) {
       float r = length(vWPos - uCam - n * t);
-      if (r < 0.6 + 2.2 * (t / L)) discard;
+      if (r < 0.35 + 1.3 * (t / L)) discard;
     }
   }`
       : "";
@@ -116,7 +117,7 @@ function patchMaterial(m: THREE.Material, opts: { xray: boolean; poche: boolean 
     if (opts.poche)
       shader.fragmentShader = shader.fragmentShader.replace(
         "#include <dithering_fragment>",
-        "#include <dithering_fragment>\n  if (!gl_FrontFacing && uPoche > 0.5) gl_FragColor = vec4(0.13, 0.12, 0.12, 1.0);",
+        "#include <dithering_fragment>\n  if (!gl_FrontFacing && uPoche > 0.5 && vWPos.y > uCutY - 0.45) gl_FragColor = vec4(0.16, 0.15, 0.15, 1.0);",
       );
   };
   m.customProgramCacheKey = () => `chalupa-${opts.xray ? 1 : 0}${opts.poche ? 1 : 0}`;
@@ -209,10 +210,12 @@ function SectionPlane() {
     if (view === 0) {
       gl.clippingPlanes = [];
       CUT.uPoche.value = 0;
+      CUT.uCutY.value = 1e6;
     } else {
       const y = floorById(view).z + cut;
       gl.clippingPlanes = [new THREE.Plane(new THREE.Vector3(0, -1, 0), y)];
       CUT.uPoche.value = 1;
+      CUT.uCutY.value = y;
     }
   }, [gl, view, cut]);
   return null;
