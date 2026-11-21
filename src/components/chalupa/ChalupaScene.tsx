@@ -1,11 +1,13 @@
 "use client";
 
-import { Environment, Html, OrbitControls, useGLTF, useProgress } from "@react-three/drei";
-import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { Suspense, useEffect, useMemo, useRef } from "react";
+import { Environment, Html, OrbitControls, TransformControls, useGLTF, useProgress } from "@react-three/drei";
+import { Canvas, useFrame, useThree, type ThreeEvent } from "@react-three/fiber";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { DRACO_URL, MODEL_URL, ROOMS, floorById, roomById, roomCenter, toThree, type Room } from "./data";
+import { ITEMS, applyLayout, gizmo, itemInfo, itemTransform, setItemTransform } from "./items";
+import { useEdit } from "./editStore";
 import { useChalupa } from "./store";
 
 const HDRI = "/assets/hdri/autumn_park_1k.hdr";
@@ -22,6 +24,9 @@ export function ChalupaScene() {
       onCreated={({ gl }) => {
         gl.toneMappingExposure = 1.05;
       }}
+      onPointerMissed={() => {
+        if (Date.now() - gizmo.lastUp > 300) useEdit.getState().select(null);
+      }}
     >
       <Suspense fallback={null}>
         <Environment files={HDRI} background={false} environmentIntensity={0.9} />
@@ -29,6 +34,7 @@ export function ChalupaScene() {
         <House />
         <Ground />
         <RoomOverlay />
+        <EditGizmo />
       </Suspense>
       <CameraRig />
       <SectionPlane />
@@ -124,7 +130,7 @@ function patchMaterial(m: THREE.Material, opts: { xray: boolean; poche: boolean 
   m.needsUpdate = true;
 }
 
-type Cat = "house" | "roof" | "site" | "glass" | "furn";
+type Cat = "house" | "roof" | "site" | "glass" | "furn" | "fixed";
 
 // Hand-tuned colours for the big surfaces (the Blender materials are procedural and export as flat averages).
 const COLORS: Record<string, string> = {
@@ -154,7 +160,7 @@ function House() {
 
   // Prepare materials once: double sided (so cut walls read as solid), cutaway shader, shadows.
   const groups = useMemo(() => {
-    const g: Record<Cat, THREE.Object3D[]> = { house: [], roof: [], site: [], glass: [], furn: [] };
+    const g: Record<Cat, THREE.Object3D[]> = { house: [], roof: [], site: [], glass: [], furn: [], fixed: [] };
     const seen = new Set<THREE.Material>();
     gltf.scene.traverse((o) => {
       const mesh = o as THREE.Mesh;
@@ -162,6 +168,10 @@ function House() {
       const cat = ((o.userData.cat as Cat) ?? (o.parent?.userData.cat as Cat) ?? "house") as Cat;
       const top = o.userData.cat ? o : (o.parent ?? o);
       if (!g[cat].includes(top)) g[cat].push(top);
+      if (cat === "furn" && top.userData.item && !ITEMS.has(top.userData.item)) {
+        top.userData.orig = { pos: top.position.toArray(), rotY: top.rotation.y };
+        ITEMS.set(top.userData.item, top);
+      }
       mesh.castShadow = cat !== "glass";
       mesh.receiveShadow = true;
       const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
@@ -184,22 +194,108 @@ function House() {
           sm.metalness = 0;
           sm.roughness = Math.max(sm.roughness, 0.55);
         }
-        patchMaterial(sm, { xray: cat === "house" || cat === "roof", poche: cat !== "furn" });
+        patchMaterial(sm, { xray: cat === "house" || cat === "roof", poche: cat !== "furn" && cat !== "fixed" });
       }
     });
     return g;
   }, [gltf]);
 
+  const layout = useEdit((s) => s.layout);
+  const edit = useEdit((s) => s.edit);
+  const select = useEdit((s) => s.select);
+
+  // Moved, rotated, deleted and duplicated furniture (saved arrangement).
   useEffect(() => {
-    for (const o of groups.furn) o.visible = layers.furniture;
+    applyLayout(gltf.scene, layout, layers.furniture);
+  }, [gltf, layout, layers.furniture]);
+
+  useEffect(() => {
+    for (const o of groups.fixed) o.visible = layers.furniture;
     for (const o of groups.site) o.visible = layers.site;
     // The roof only makes sense from outside: floor views cut it away anyway.
     for (const o of groups.roof) o.visible = layers.roof && view === 0;
   }, [groups, layers, view]);
 
-  return <primitive object={gltf.scene} />;
+  // Edit mode: click picks the nearest visible furniture item below the section plane.
+  const onClick = (e: ThreeEvent<MouseEvent>) => {
+    if (!edit || e.delta > 4 || Date.now() - gizmo.lastUp < 300) return;
+    e.stopPropagation();
+    const cutY = CUT.uCutY.value + 1e-3;
+    const hit = e.intersections.find((h) => h.point.y <= cutY && shown(h.object) && !isGlass(h.object));
+    const item = hit ? itemOf(hit.object) : null;
+    select(item ? itemInfo(item) : null);
+  };
+  const [hover, setHover] = useState(false);
+  useEffect(() => {
+    document.body.style.cursor = edit && hover ? "pointer" : "";
+  }, [edit, hover]);
+  const onMove = (e: ThreeEvent<PointerEvent>) => {
+    if (!edit) return;
+    const cutY = CUT.uCutY.value + 1e-3;
+    const hit = e.intersections.find((h) => h.point.y <= cutY && shown(h.object) && !isGlass(h.object));
+    setHover(!!(hit && itemOf(hit.object)));
+  };
+
+  return <primitive object={gltf.scene} onClick={onClick} onPointerMove={onMove} onPointerOut={() => setHover(false)} />;
 }
 useGLTF.preload(MODEL_URL, DRACO_URL);
+
+function shown(o: THREE.Object3D | null): boolean {
+  for (let p = o; p; p = p.parent) if (!p.visible) return false;
+  return true;
+}
+function isGlass(o: THREE.Object3D) {
+  const m = (o as THREE.Mesh).material as THREE.Material | undefined;
+  return !!m && !Array.isArray(m) && m.transparent;
+}
+function itemOf(o: THREE.Object3D | null): THREE.Object3D | null {
+  for (let p = o; p; p = p.parent) if (p.userData.item && p.userData.cat === "furn") return p;
+  return null;
+}
+
+// ---------------------------------------------------------------- edit gizmo
+function EditGizmo() {
+  const edit = useEdit((s) => s.edit);
+  const selected = useEdit((s) => s.selected);
+  const tool = useEdit((s) => s.tool);
+  const layout = useEdit((s) => s.layout);
+  const obj = edit && selected ? ITEMS.get(selected.id) : undefined;
+  const helper = useMemo(() => new THREE.Box3Helper(new THREE.Box3(), new THREE.Color("#7cf0ff")), []);
+  useFrame(() => {
+    if (obj) helper.box.setFromObject(obj);
+    helper.visible = !!obj && obj.visible;
+  });
+  void layout; // re-render when the layout adds or removes copies
+  if (!obj || !obj.visible) return null;
+  const start = () => {
+    obj.userData.dragFrom = itemTransform(obj);
+  };
+  const done = () => {
+    gizmo.lastUp = Date.now();
+    const t = itemTransform(obj);
+    const f = obj.userData.dragFrom as ReturnType<typeof itemTransform> | undefined;
+    if (f && f.rotY === t.rotY && f.pos.every((v, i) => Math.abs(v - t.pos[i]) < 1e-4)) return;
+    useEdit.getState().commit((l) => setItemTransform(l, selected!.id, t));
+  };
+  return (
+    <>
+      <primitive object={helper} />
+      <TransformControls
+        object={obj}
+        mode={tool === "move" ? "translate" : "rotate"}
+        showX={tool === "move"}
+        showY={tool === "rotate"}
+        showZ={tool === "move"}
+        space="world"
+        size={0.9}
+        translationSnap={0.05}
+        rotationSnap={THREE.MathUtils.degToRad(15)}
+        onMouseDown={start}
+        onMouseUp={done}
+      />
+    </>
+  );
+}
 
 /** Horizontal section at the chosen height of the current floor (global clipping). */
 function SectionPlane() {

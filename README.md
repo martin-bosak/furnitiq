@@ -76,5 +76,7 @@ Read-only 3D viewer of a finished house model (Chalupa Brtníky 69), linked from
 - Rooms: list and in-scene labels; clicking flies the camera to the room and highlights its footprint. "Odkrýt zdi" cuts away walls between the camera and the orbit target in a shader.
 - Layers: furniture, roof, site, labels.
 - Code: `src/components/chalupa/` (`data.ts` holds floors and room boxes in Blender coordinates). Model: `public/models/chalupa/chalupa.glb` (Draco, decoder in `public/draco/`).
+- Editing ("Upravit"): click a piece of furniture to select it, then move it on the floor or rotate it with the gizmo, rotate by 90° (R), duplicate (Ctrl+D), delete (Del), reset it or restore deleted pieces; Ctrl+Z / Ctrl+Shift+Z undo and redo. Every piece is its own GLB node (`extras.item`, origin at the center of its base); built-ins (kitchens, bathrooms, doors, wall linings) are merged per room and stay fixed.
+- The arrangement is shared: it is stored as changes against the model (moved/rotated/deleted items and copies) via `GET/PUT /api/chalupa/layout` (`src/lib/chalupa/layout.ts`), in Postgres table `chalupa_layouts` when `DATABASE_URL` is set, otherwise in `data/chalupa/layout.json`. Saves carry the version they were based on; a stale save gets `409` and the newer arrangement.
 - Updating the model: run `_ch2_webexport.py` in background Blender on the house `.blend` and copy the resulting `chalupa.glb` here. Objects carry `extras` (`cat`: house / roof / site / glass / furn, plus `floor` and `room` for furniture).
 

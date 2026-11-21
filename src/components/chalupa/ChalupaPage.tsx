@@ -1,10 +1,12 @@
 "use client";
 
-import { ArrowLeft, Armchair, Eye, House, Layers, RotateCcw, Tag, Trees } from "lucide-react";
+import { ArrowLeft, Armchair, Eye, House, Layers, PencilRuler, RotateCcw, Tag, Trees } from "lucide-react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { FLOORS, ROOMS } from "./data";
+import { EditBar } from "./EditBar";
+import { useEdit } from "./editStore";
 import { useChalupa, type View } from "./store";
 
 const ChalupaScene = dynamic(() => import("./ChalupaScene").then((m) => m.ChalupaScene), { ssr: false });
@@ -21,6 +23,12 @@ export function ChalupaPage() {
   const [panel, setPanel] = useState(true);
   const rooms = ROOMS.filter((r) => view === 0 || r.floor === view);
   const active = room ? ROOMS.find((r) => r.id === room) : undefined;
+  const edit = useEdit((s) => s.edit);
+
+  // The saved furniture arrangement is shown to everyone, not only in edit mode.
+  useEffect(() => {
+    void useEdit.getState().load();
+  }, []);
 
   return (
     <div className="relative z-10 flex h-dvh flex-col gap-3 p-3">
@@ -46,6 +54,17 @@ export function ChalupaPage() {
           ))}
         </nav>
         <div className="flex-1" />
+        <button
+          onClick={() => {
+            useEdit.getState().setEdit(!edit);
+            if (!edit && !layers.furniture) toggle("furniture");
+          }}
+          className={`btn shrink-0 ${edit ? "!border-[#ffb86b]/60 !bg-[#ffb86b]/15 !text-white" : ""}`}
+          title="Přesouvání nábytku"
+        >
+          <PencilRuler size={14} />
+          <span className="max-sm:hidden">{edit ? "Hotovo" : "Upravit"}</span>
+        </button>
         <button onClick={() => setPanel((p) => !p)} className="icon-btn" title="Panel">
           <Layers size={17} />
         </button>
@@ -100,7 +119,9 @@ export function ChalupaPage() {
           </aside>
         )}
 
-        {active && (
+        {edit && <EditBar />}
+
+        {active && !edit && (
           <div className="glass pointer-events-none absolute right-3 bottom-3 rounded-2xl px-4 py-2.5 max-md:hidden">
             <div className="font-mono text-[11px] text-white/50">{active.id}</div>
             <div className="text-[15px] font-semibold">{active.name}</div>
@@ -108,7 +129,7 @@ export function ChalupaPage() {
         )}
 
         <div className="pointer-events-none absolute right-3 top-3 hidden text-right text-[11px] leading-relaxed text-white/40 md:block">
-          tažení: otáčení · pravé tl.: posun · kolečko: zoom
+          {edit ? "klik: výběr · G posun · T otáčení · R 90° · Del smazat · Ctrl+Z zpět" : "tažení: otáčení · pravé tl.: posun · kolečko: zoom"}
         </div>
       </main>
     </div>
