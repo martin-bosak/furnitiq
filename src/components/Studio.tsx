@@ -2,6 +2,7 @@
 
 import { Check, ChevronDown, CloudOff, Download, FilePlus2, Loader2, MessageSquare, Redo2, Trash2, Undo2, Upload, X } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
+import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { sampleScene } from "@/lib/scene/sample";
 import { parseScene, type Scene } from "@/lib/scene/schema";
@@ -179,6 +180,10 @@ function TopBar({ status, openProject, createProject }: { status: Status | null;
         </div>
         <span className="text-[15px] font-semibold tracking-tight">furnitiq</span>
       </div>
+
+      <Link href="/chalupa" className="btn !h-8 !px-3 !text-xs" title="Interaktivní model chalupy">
+        Chalupa
+      </Link>
 
       <div className="mx-2 h-5 w-px bg-white/10" />
 

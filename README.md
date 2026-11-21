@@ -67,3 +67,14 @@ An external agent (a skill or MCP server) produces a `furnitiq.scene` JSON from 
 Plan: drag items, use the cyan handle to rotate (Alt for fine snap), click empty space to pin, wheel to zoom, drag to pan.
 3D: drag to look, wheel to move, WASD to walk, Q/E for height.
 Global: `R` rotates 90°, `Ctrl+D` duplicates, `Del` deletes, arrow keys nudge, `Ctrl+Z` / `Ctrl+Shift+Z` undo and redo, `Esc` clears.
+
+## Chalupa viewer (`/chalupa`)
+
+Read-only 3D viewer of a finished house model (Chalupa Brtníky 69), linked from the top bar.
+
+- Views: exterior, then one per floor. A floor view clips the house with a horizontal section (`gl.clippingPlanes`) at an adjustable height; cut walls show a dark fill.
+- Rooms: list and in-scene labels; clicking flies the camera to the room and highlights its footprint. "Odkrýt zdi" cuts away walls between the camera and the orbit target in a shader.
+- Layers: furniture, roof, site, labels.
+- Code: `src/components/chalupa/` (`data.ts` holds floors and room boxes in Blender coordinates). Model: `public/models/chalupa/chalupa.glb` (Draco, decoder in `public/draco/`).
+- Updating the model: run `_ch2_webexport.py` in background Blender on the house `.blend` and copy the resulting `chalupa.glb` here. Objects carry `extras` (`cat`: house / roof / site / glass / furn, plus `floor` and `room` for furniture).
+
